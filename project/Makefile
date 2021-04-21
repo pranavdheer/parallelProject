@@ -14,7 +14,7 @@ LDFLAGS=-L/usr/local/depot/cuda-10.2/lib64/ -lcudart
 NVCC=nvcc
 NVCCFLAGS=-O3 -m64 --gpu-architecture compute_61 -ccbin /usr/bin/gcc
 
-OBJS=$(OBJDIR)/main.o  $(OBJDIR)/test.o
+OBJS=$(OBJDIR)/main.o  $(OBJDIR)/forwardthrust.o
 
 .PHONY: dirs clean
 
