@@ -15,7 +15,24 @@
 #include "lib.h"
 
 
+void parallelForward(const Edges& edges){
 
+    int m = edges.size();
+    
+    // transfer data to GPU
+    cudaMalloc(&dev_edges, m * 2 * sizeof(int));
+
+    cudaMemcpy(dev_edges, edges.data(), m * 2 * sizeof(int),
+    cudaMemcpyHostToDevice);
+
+
+
+
+
+
+
+
+}
 
 void
 printCudaInfo() {
