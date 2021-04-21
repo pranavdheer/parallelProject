@@ -19,6 +19,25 @@ using namespace std;
 
 #define threadsPerBlock 1024
 
+
+// ptr =  cuda device pointer
+void debug(int *ptr,int size, string msg){
+
+    cout<<msg<<endl;
+
+    int* deb = (int*)malloc(size * sizeof(int));
+
+    cudaMemcpy(deb,ptr, size * sizeof(int), cudaMemcpyDeviceToHost);
+
+    for(int i=0; i<size; i++)
+      cout<<deb[i]<<" ";
+
+    cout<<"\n";
+
+    free(deb);
+
+}
+
 __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
     int id = blockDim.x * blockIdx.x + threadIdx.x;
@@ -39,26 +58,12 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
     }
 
    for(int i = start+1 ; i <= end ; i++ ){
-       dev_nodes[i] = edgeIndex; 
+       dev_nodes[i] = edgeIndex;
    }
 
 }
 
-// ptr =  cuda device pointer
-void debug(int *ptr,int size, string msg){
 
-    cout<<msg<<endl;
-
-    int* deb = (int*)malloc(size * sizeof(int));
-    cudaMemcpy(ptr, deb, size * sizeof(int), cudaMemcpyDeviceToHost);
-
-    for(int i=0; i<size; i++)
-      cout<<deb[i]<<" ";
-
-    cout<<"\n";
-    free(debug);
-
-}
 
 
 
@@ -80,17 +85,17 @@ void parallelForward(const Edges& edges){
     cudaMemcpyHostToDevice);
 
     // Hardcoding the node value 
-    int n = 5;
+    int n = 4;
      
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (n + 1) * sizeof(int));
 
 
-    int numberOfBlocks = (m + threadsPerBlock - 1) / threadsPerBlock;
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(int* dev_edges, int *dev_nodes,size);
+    numberOfBlocks = (m + threadsPerBlock - 1) / threadsPerBlock;
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,size,n);
     cudaDeviceSynchronize();
     
-    debug(nodeArray,n+1,"print node array");
+    debug(dev_nodes,n+1,"print node array");
 
 }
 
