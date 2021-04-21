@@ -1,6 +1,7 @@
 // System includes
 #include <stdio.h>
 #include <assert.h>
+#include<iostream>
 
 // CUDA runtime
 #include <cuda.h>
@@ -14,28 +15,86 @@
 #include <thrust/functional.h>
 #include "lib.h"
 
+using namespace std;
+
+#define threadsPerBlock 1024
+
+__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
+
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+    int start = 0;
+    int end = 0;
+     
+    int edgeIndex = id * 2;
+    
+    // early stopping condition or
+    // outofbound condition
+    if(edgeIndex == n-1 || edgeIndex + 2 >= size)
+      return;
+
+    if(dev_edges[edgeIndex] != dev_edges[edgeIndex + 2]){
+
+        start = dev_edges[edgeIndex];
+        end   = dev_edges[edgeIndex + 2];
+    }
+
+   for(int i = start+1 ; i <= end ; i++ ){
+       dev_nodes[i] = edgeIndex; 
+   }
+
+}
+
+// ptr =  cuda device pointer
+void debug(int *ptr,int size, string msg){
+
+    cout<<msg<<endl;
+
+    int* deb = (int*)malloc(size * sizeof(int));
+    cudaMemcpy(ptr, deb, size * sizeof(int), cudaMemcpyDeviceToHost);
+
+    for(int i=0; i<size; i++)
+      cout<<deb[i]<<" ";
+
+    cout<<"\n";
+    free(debug);
+
+}
+
+
+
 
 void parallelForward(const Edges& edges){
 
     int m = edges.size();
+    int size = 2*m;
+    int* dev_edges;
+    int* dev_nodes;
+    int numberOfBlocks;
+
+    // TODO-: sort the edges
     
     // transfer data to GPU
-    cudaMalloc(&dev_edges, m * 2 * sizeof(int));
+    cudaMalloc(&dev_edges, size * sizeof(int));
 
     cudaMemcpy(dev_edges, edges.data(), m * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
 
+    // Hardcoding the node value 
+    int n = 5;
+     
+    // allocate space for the node array
+    cudaMalloc(&dev_nodes, (n + 1) * sizeof(int));
 
 
-
-
-
-
+    int numberOfBlocks = (m + threadsPerBlock - 1) / threadsPerBlock;
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(int* dev_edges, int *dev_nodes,size);
+    cudaDeviceSynchronize();
+    
+    debug(nodeArray,n+1,"print node array");
 
 }
 
-void
-printCudaInfo() {
+void printCudaInfo() {
     int deviceCount = 0;
     cudaError_t err = cudaGetDeviceCount(&deviceCount);
 
