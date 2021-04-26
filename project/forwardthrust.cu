@@ -202,7 +202,7 @@ void parallelForward(const Edges& edges){
 
     cudaMalloc(&numv_array, size * sizeof(int));
     calculateNumVertices(dev_edges, numv_array, size);
-    cudaMemcpy(num_vertices, numv_array, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(num_vertices, numv_array, sizeof(int), cudaMemcpyDeviceToHost); // add 1 to answer(num_vertices) for code after this
     // Hardcoding the node value 
     int n = 4;
      
