@@ -2,7 +2,7 @@
 
 TESTDATA="http://snap.stanford.edu/data/as-skitter.txt.gz"
 
-g++ -std=c++11 -O3 convert-from-snap-main.cpp graph.cpp graph.h -o convert-from-snap-main.o
+g++ -std=c++11 -O3 convert-from-snap-main.cpp -o convert-from-snap-main.o
 
 mkdir -p data
 cd data
