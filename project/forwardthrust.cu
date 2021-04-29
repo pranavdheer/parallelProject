@@ -47,17 +47,19 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
     //use to calculate the degree of the last node
     if(edgeIndex == 0)
-       dev_nodes[n] = size/2;
+       dev_nodes[n] = size >> 1;
     
+    int x = dev_edges[edgeIndex];
     // early stopping condition or
     // outofbound condition
-    if(dev_edges[edgeIndex] == n-1 || edgeIndex + 2 >= size)
+    if(dev_edges[edgeIndex] == n-1 || (edgeIndex + 2) >= size)
       return;
 
-    if(dev_edges[edgeIndex] != dev_edges[edgeIndex + 2]){
+    int y = dev_edges[edgeIndex + 2];
+    if(x != y){
 
-        start = dev_edges[edgeIndex];
-        end   = dev_edges[edgeIndex + 2];
+        start = x;
+        end   = y;
     }
 
    for(int i = start+1 ; i <= end ; i++ ){
@@ -72,7 +74,7 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
     int id = blockDim.x * blockIdx.x + threadIdx.x;
 
     // access every second element
-    id = id * 2; 
+    id = id << 1; 
 
     // outofbound access
     if(id >= 2*numberOfEdges)
@@ -92,8 +94,38 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
 }
 
-__global__ void trianglecounting(int* dev_edges,int* dev_nodes){
+__global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int numberOfEdges){
 
+    int id = blockDim.x * blockIdx.x + threadIdx.x;
+    
+    id = id << 1;
+    // TODO: need to decide how many edges thread will be responsible for
+    if(id >= numberOfEdges)
+        return;
+    int count = 0;
+    int s = dev_edges[id];
+    int e = dev_edges[id + 1];
+
+    int s_start = dev_nodes[s];
+    int s_end = dev_nodes[s + 1];
+    int e_start = dev_nodes[e];
+    int e_end = dev_nodes[e + 1];
+    
+    int s_next,e_next;
+    while(s_start < s_end && e_start < e_end)
+    {
+        s_next = dev_edges[(s_start << 1) + 1];
+        e_next = dev_edges[(e_start << 1) + 1];
+        int difference = s_next - e_next;
+        if(difference == 0)
+            count++;
+        if(difference <= 0)
+            s_start += 1;
+        if(difference >= 0)
+            e_start += 1;
+    }
+
+    result[id >> 1] = count;
 
 
 
@@ -104,6 +136,7 @@ void parallelForward(const Edges& edges){
     int numberOfEdges = edges.size();
     int* dev_edges;
     int* dev_nodes;
+    int *result;
     int numberOfBlocks;
     int numberOfNodes;
     int newBound;
@@ -112,12 +145,12 @@ void parallelForward(const Edges& edges){
     
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
-
+    cudaMalloc(&result, numberOfEdges * sizeof(int));
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
 
     // Hardcoding the node value 
-    numberOfNodes = 4;
+    numberOfNodes = 7;
      
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
@@ -144,7 +177,7 @@ void parallelForward(const Edges& edges){
 
     printf("number of edges = %d\n",numberOfEdges);
     debug(dev_edges,numberOfEdges ,"print filtered Edges");
-  
+
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
@@ -154,6 +187,10 @@ void parallelForward(const Edges& edges){
 
     debug(dev_nodes,numberOfNodes+1,"print new node array");
 
+    trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
+    cudaDeviceSynchronize();
+
+    debug(result,numberOfEdges/2,"print result array");
     //calculate the number of triangles
 //    trianglecounting();
 
