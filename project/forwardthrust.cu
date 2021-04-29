@@ -52,7 +52,7 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
     int x = dev_edges[edgeIndex];
     // early stopping condition or
     // outofbound condition
-    if(dev_edges[edgeIndex] == n-1 || (edgeIndex + 2) >= size)
+    if(x == n-1 || (edgeIndex + 2) >= size)
       return;
 
     int y = dev_edges[edgeIndex + 2];
@@ -63,7 +63,7 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
     }
 
    for(int i = start+1 ; i <= end ; i++ ){
-       dev_nodes[i] = (edgeIndex + 2)/2; //always divisble by two
+       dev_nodes[i] = (edgeIndex + 2) >> 1; //always divisble by two
    }
 
 
