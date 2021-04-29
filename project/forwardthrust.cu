@@ -92,6 +92,13 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
 }
 
+__global__ void trianglecounting(int* dev_edges,int* dev_nodes){
+
+
+
+
+}
+
 void parallelForward(const Edges& edges){
 
     int numberOfEdges = edges.size();
@@ -134,10 +141,22 @@ void parallelForward(const Edges& edges){
     thrust::device_ptr<int> ptr((int*)dev_edges);
     thrust::remove(ptr, ptr + 2*numberOfEdges , -1);
     cudaDeviceSynchronize();
-  
-    printf("%d\n",numberOfEdges);
+
+    printf("number of edges = %d\n",numberOfEdges);
     debug(dev_edges,numberOfEdges ,"print filtered Edges");
   
+    //get the node array once again
+    //note = new size of the edge array is now numberOfEdges
+    numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
+    cudaDeviceSynchronize(); 
+    // note = the actual index of the element in edge array is 2*nodeArray[i]
+
+    debug(dev_nodes,numberOfNodes+1,"print new node array");
+
+    //calculate the number of triangles
+//    trianglecounting();
+
 
 }
 
