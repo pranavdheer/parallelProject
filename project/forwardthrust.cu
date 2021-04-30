@@ -127,7 +127,12 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int
 
     result[id >> 1] = count;
 
+}
 
+void remove(int* dev_edges,int numberOfEdges){
+
+    thrust::device_ptr<int> ptr((int*)dev_edges);
+    thrust::remove(ptr, ptr + 2*numberOfEdges , -1);
 
 }
 
@@ -139,7 +144,6 @@ void parallelForward(const Edges& edges){
     int *result;
     int numberOfBlocks;
     int numberOfNodes;
-    int newBound;
 
     // TODO-: sort the edges
     
@@ -150,7 +154,8 @@ void parallelForward(const Edges& edges){
     cudaMemcpyHostToDevice);
 
     // Hardcoding the node value 
-    numberOfNodes = 7;
+    numberOfNodes = 1696415;
+    // numberOfNodes = 4;
      
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
@@ -160,23 +165,14 @@ void parallelForward(const Edges& edges){
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaDeviceSynchronize();
 
-    debug(dev_nodes,numberOfNodes+1,"print node array");
     
     // compute the degree of the nodes
     numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges);
     cudaDeviceSynchronize();
 
-    debug(dev_edges,numberOfEdges*2,"print filtered Edges");
-
-
     //remove the filtered edges
-    thrust::device_ptr<int> ptr((int*)dev_edges);
-    thrust::remove(ptr, ptr + 2*numberOfEdges , -1);
-    cudaDeviceSynchronize();
-
-    printf("number of edges = %d\n",numberOfEdges);
-    debug(dev_edges,numberOfEdges ,"print filtered Edges");
+    remove(dev_edges,numberOfEdges);
 
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
@@ -185,14 +181,17 @@ void parallelForward(const Edges& edges){
     cudaDeviceSynchronize(); 
     // note = the actual index of the element in edge array is 2*nodeArray[i]
 
-    debug(dev_nodes,numberOfNodes+1,"print new node array");
-
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
     cudaDeviceSynchronize();
 
-    debug(result,numberOfEdges/2,"print result array");
+
     //calculate the number of triangles
-//    trianglecounting();
+    thrust::device_ptr<int> ptr(result);
+    int numberoftriangles =  thrust::reduce(ptr, ptr + numberOfNodes);
+
+    // debug(result,numberOfNodes,"triangle array");
+
+    printf("number of triangles = %d\n",numberoftriangles);
 
 
 }
