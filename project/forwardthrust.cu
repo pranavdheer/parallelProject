@@ -123,8 +123,8 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int
         int s_next,e_next;
         while(s_start < s_end && e_start < e_end)
         {
-            s_next = dev_edges[(s_start << 1) + 1];
-            e_next = dev_edges[(e_start << 1) + 1];
+            s_next = dev_edges[(s_start << 1)];
+            e_next = dev_edges[(e_start << 1)];
             int difference = s_next - e_next;
             if(difference == 0)
                 count++;
