@@ -96,37 +96,39 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int size){
 __global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int numberOfEdges){
 
     int id = blockDim.x * blockIdx.x + threadIdx.x;
-    
-    id = id << 1;
-    // TODO: need to decide how many edges thread will be responsible for
-    if(id >= numberOfEdges)
-        return;
-    int count = 0;
-    int s = dev_edges[id];
-    int e = dev_edges[id + 1];
+    int step = gridDim.x * blockDim.x;
 
-    int s_start = dev_nodes[s];
-    int s_end = dev_nodes[s + 1];
-    int e_start = dev_nodes[e];
-    int e_end = dev_nodes[e + 1];
+
+    for( id = id * 2; id<numberOfEdges ; id = id+step){
     
-    int s_next,e_next;
-    while(s_start < s_end && e_start < e_end)
-    {
-        s_next = dev_edges[(s_start << 1) + 1];
-        e_next = dev_edges[(e_start << 1) + 1];
-        int difference = s_next - e_next;
-        if(difference == 0)
-            count++;
-        if(difference <= 0)
-            s_start += 1;
-        if(difference >= 0)
-            e_start += 1;
-    }
+        int count = 0;
+        int s = dev_edges[id];
+        int e = dev_edges[id + 1];
+
+        int s_start = dev_nodes[s];
+        int s_end = dev_nodes[s + 1];
+        int e_start = dev_nodes[e];
+        int e_end = dev_nodes[e + 1];
+    
+        int s_next,e_next;
+        while(s_start < s_end && e_start < e_end)
+        {
+            s_next = dev_edges[(s_start << 1) + 1];
+            e_next = dev_edges[(e_start << 1) + 1];
+            int difference = s_next - e_next;
+            if(difference == 0)
+                count++;
+            if(difference <= 0)
+                s_start += 1;
+            if(difference >= 0)
+                e_start += 1;
+        }
 
     result[id >> 1] = count;
 
-}
+    }
+
+}    
 
 void remove(int* dev_edges,int numberOfEdges){
 
@@ -175,7 +177,7 @@ void parallelForward(const Edges& edges){
     cudaDeviceSynchronize();
 
     // debug(dev_edges,numberOfNodes+1,"node array");
-
+     
     // compute the degree of the nodes
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2);
     cudaDeviceSynchronize();
