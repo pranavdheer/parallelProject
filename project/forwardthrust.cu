@@ -1,7 +1,7 @@
 // System includes
 #include <stdio.h>
 #include <assert.h>
-#include<iostream>
+#include <iostream>
 
 // CUDA runtime
 #include <cuda.h>
@@ -17,6 +17,7 @@
 using namespace std;
 
 #define threadsPerBlock 1024
+#define numberOfBlocks 46
 #define FILTER -1
 
 // ptr =  cuda device pointer
@@ -39,60 +40,58 @@ void debug(int *ptr,int size, string msg){
 
 __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
-    int id = blockDim.x * blockIdx.x + threadIdx.x;
+
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    int step = gridDim.x * blockDim.x;
     int start = 0;
     int end = 0;
      
-    int edgeIndex = id * 2;
+    for(int edgeIndex = idx*2 + 1; (edgeIndex + 2) < size ; edgeIndex += step){
 
-    //use to calculate the degree of the last node
-    if(edgeIndex == 0)
-       dev_nodes[n] = size >> 1;
+        //use to calculate the degree of the last node
+        if(edgeIndex == 1)
+            dev_nodes[n] = size >> 1;
     
-    int x = dev_edges[edgeIndex];
-    // early stopping condition or
-    // outofbound condition
-    if(x == n-1 || (edgeIndex + 2) >= size)
-      return;
+        int x = dev_edges[edgeIndex];
+        // early stopping condition or
+        // outofbound condition
+        if(x == n-1)
+            return;
 
-    int y = dev_edges[edgeIndex + 2];
-    if(x != y){
+        int y = dev_edges[edgeIndex + 2];
+        if(x != y){
 
-        start = x;
-        end   = y;
+            start = x;
+            end   = y;
+        }
+
+        for(int i = start+1 ; i <= end ; i++ ){
+            dev_nodes[i] = (edgeIndex + 2) >> 1; //always divisble by two
+        }
+
     }
+}    
 
-   for(int i = start+1 ; i <= end ; i++ ){
-       dev_nodes[i] = (edgeIndex + 2) >> 1; //always divisble by two
-   }
-
-
-}
-
-__global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
+__global__ void filter(int* dev_edges,int* dev_nodes,int size){
 
     int id = blockDim.x * blockIdx.x + threadIdx.x;
+    int step = gridDim.x * blockDim.x;
 
-    // access every second element
-    id = id << 1; 
+    for(id = id*2; id < size ; id += step){
 
-    // outofbound access
-    if(id >= 2*numberOfEdges)
-       return;
+        int source = dev_edges[id];
+        int destination   = dev_edges[id+1];
 
-    int source = dev_edges[id];
-    int destination   = dev_edges[id+1];
-
-    int sourceDegree = dev_nodes[source+1] - dev_nodes[source];
-    int destinationDegree = dev_nodes[destination+1] - dev_nodes[destination]; 
+        int sourceDegree = dev_nodes[source+1] - dev_nodes[source];
+        int destinationDegree = dev_nodes[destination+1] - dev_nodes[destination]; 
 
 
-    if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && destination < source)){
-        dev_edges[id] = FILTER;
-        dev_edges[id + 1] = FILTER;
-    }         
-
-}
+        if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && destination < source)){
+            dev_edges[id] = FILTER;
+            dev_edges[id + 1] = FILTER;
+        }         
+    }
+}    
 
 __global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int numberOfEdges){
 
@@ -136,22 +135,33 @@ void remove(int* dev_edges,int numberOfEdges){
 
 }
 
+void sort(int* dev_edges,int numberOfEdges){
+
+    // sort the edges
+    thrust::device_ptr<uint64_t> ptr((uint64_t*)dev_edges);
+    thrust::sort(ptr, ptr + numberOfEdges);
+}
+
 void parallelForward(const Edges& edges){
 
     int numberOfEdges = edges.size();
     int* dev_edges;
     int* dev_nodes;
-    int *result;
-    int numberOfBlocks;
+    int* result;
     int numberOfNodes;
 
-    // TODO-: sort the edges
     
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
     cudaMalloc(&result, numberOfEdges * sizeof(int));
+    
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
+
+
+    // debug(dev_edges,2*numberOfEdges,"orig data");
+    sort(dev_edges,numberOfEdges);
+    // debug(dev_edges,2*numberOfEdges,"sort data");
 
     // Hardcoding the node value 
     numberOfNodes = 1696415;
@@ -161,29 +171,28 @@ void parallelForward(const Edges& edges){
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
     // reuse the same node-array for everything to save space
-    numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaDeviceSynchronize();
 
-    
+    // debug(dev_edges,numberOfNodes+1,"node array");
+
     // compute the degree of the nodes
-    numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
-    filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges);
+    filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2);
     cudaDeviceSynchronize();
 
+    
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
 
+
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
-    numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaDeviceSynchronize(); 
     // note = the actual index of the element in edge array is 2*nodeArray[i]
 
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
     cudaDeviceSynchronize();
-
 
     //calculate the number of triangles
     thrust::device_ptr<int> ptr(result);

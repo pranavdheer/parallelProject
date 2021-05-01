@@ -15,8 +15,8 @@ Edges edges;
 void customTest(){
 
 
-edges.push_back(std::make_pair(0,1));
 edges.push_back(std::make_pair(0,2));
+edges.push_back(std::make_pair(0,1));
 edges.push_back(std::make_pair(0,3));
 
 
@@ -36,21 +36,12 @@ parallelForward(edges);
 
 void readFromFile(char* filename){
 
-    ifstream in(filename);
-    string buf;
-    int node_a, node_b;
-
-    while (getline(in, buf)){
-
-         if (buf.empty() || buf[0] == '#')
-            continue;
-
-         sscanf(buf.c_str(), "%d %d", &node_a, &node_b);
-
-         edges.push_back(std::make_pair(node_a,node_b));
-    }
-  
-   
+  ifstream in(filename, ios::binary);
+  int m;
+  in.read((char*)&m, sizeof(int));
+  edges.resize(m);
+  in.read((char*)edges.data(), 2 * m * sizeof(int));
+  cout<<"done reading the file"<<"\n"<<"number of edges = "<<edges.size()<<endl;
 }
 
 
