@@ -35,7 +35,26 @@ parallelForward(edges);
 
 
 }
+int NumVertices(const Edges& edges) {
+  int num_vertices = 0;
+  for (const pair<int, int>& edge : edges)
+    num_vertices = max(num_vertices, 1 + max(edge.first, edge.second));
+  return num_vertices;
+}
+void PermuteEdges(Edges* edges) {
+  random_shuffle(edges->begin(), edges->end());
+}
 
+void PermuteVertices(Edges* edges) {
+  vector<int> p(NumVertices(*edges));
+  for (uint i = 0; i < p.size(); ++i)
+    p[i] = i;
+  random_shuffle(p.begin(), p.end());
+  for (pair<int, int>& edge : *edges) {
+    edge.first = p[edge.first];
+    edge.second = p[edge.second];
+  }
+}
 void MakeUndirected(Edges* edges) {
 const size_t n = edges->size();
 for (uint i = 0; i < n; ++i) {
@@ -61,8 +80,8 @@ inline void NormalizeEdges(Edges* edges) {
     MakeUndirected(edges);
     RemoveDuplicateEdges(edges);
     RemoveSelfLoops(edges);
-    //PermuteEdges(edges);
-    //PermuteVertices(edges);
+    PermuteEdges(edges);
+    PermuteVertices(edges);
 }
 void WriteEdgesToFile(const char* filename) {
   ofstream out(filename, ios::binary);
