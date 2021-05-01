@@ -49,24 +49,34 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
     for(int edgeIndex = idx*2 + 1; (edgeIndex + 2) < size ; edgeIndex += step){
 
         //use to calculate the degree of the last node
-        if(edgeIndex == 1)
-            dev_nodes[n] = size >> 1;
+        if(edgeIndex == 1){
+            // dev_nodes[n] = size >> 1;
+            dev_nodes[0] = 0;
+        }    
     
         int x = dev_edges[edgeIndex];
         // early stopping condition or
         // outofbound condition
-        if(x == n-1)
-            return;
-
+         
         int y = dev_edges[edgeIndex + 2];
+        
         if(x != y){
 
             start = x;
             end   = y;
         }
 
+        else if (x == y && edgeIndex + 2 == size-1){
+
+            start = x;
+            end = n;
+            edgeIndex += 2; 
+            // printf("condition = %d %d\n",start,end);
+        }
+
+        // dealing with missing nodes
         for(int i = start+1 ; i <= end ; i++ ){
-            dev_nodes[i] = (edgeIndex + 2) >> 1; //always divisble by two
+            dev_nodes[i] = (edgeIndex  + 2) >> 1; //always divisble by two
         }
 
     }
@@ -163,11 +173,11 @@ void parallelForward(const Edges& edges){
 
     // debug(dev_edges,2*numberOfEdges,"orig data");
     sort(dev_edges,numberOfEdges);
-    // debug(dev_edges,2*numberOfEdges,"sort data");
+    debug(dev_edges,2*numberOfEdges,"sort data");
 
     // Hardcoding the node value 
-    numberOfNodes = 1696415;
-    // numberOfNodes = 4;
+    // numberOfNodes = 1696415;
+    numberOfNodes = 4;
      
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
@@ -176,7 +186,7 @@ void parallelForward(const Edges& edges){
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaDeviceSynchronize();
 
-    // debug(dev_edges,numberOfNodes+1,"node array");
+    debug(dev_nodes,numberOfNodes+1,"node array");
      
     // compute the degree of the nodes
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2);
@@ -186,13 +196,17 @@ void parallelForward(const Edges& edges){
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
 
+    debug(dev_edges,numberOfEdges,"filtred array");
 
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaDeviceSynchronize(); 
-    // note = the actual index of the element in edge array is 2*nodeArray[i]
 
+    debug(dev_nodes,numberOfNodes+1,"node array");
+    
+    // note = the actual index of the element in edge array is 2*nodeArray[i]
+    cout<<"start triangle counting"<<endl;
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
     cudaDeviceSynchronize();
 
@@ -203,6 +217,10 @@ void parallelForward(const Edges& edges){
     // debug(result,numberOfNodes,"triangle array");
 
     printf("number of triangles = %d\n",numberoftriangles);
+
+    cudaFree(dev_edges);
+    cudaFree(dev_nodes);
+    cudaFree(result);
 
 
 }
