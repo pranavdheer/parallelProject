@@ -17,7 +17,7 @@
 using namespace std;
 
 #define threadsPerBlock 1024
-#define numberOfBlocks 1
+#define numberOfBlocks 46
 #define FILTER -1
 
 // ptr =  cuda device pointer
@@ -213,9 +213,10 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result
                 e_start += 1;
         }
 
-    result[idx] = count;
+    
 
     }
+    result[idx] = count;
 }
 void SortEdges(int m, int* edges) {
     thrust::device_ptr<uint64_t> ptr((uint64_t*)edges);
