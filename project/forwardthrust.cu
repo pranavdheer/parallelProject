@@ -42,39 +42,6 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 /*
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
-    
-    int start = 0;
-    int end = 0;
-     
-    for(int id = idx; id < size / 2; id += step)
-    {
-        int edgeIndex = id * 2;
-
-        //use to calculate the degree of the last node
-        if(edgeIndex == 0)
-        dev_nodes[n] = size / 2;
-        
-        int x = dev_edges[edgeIndex];
-        // early stopping condition or
-        // outofbound condition
-        if(x == n-1 || (edgeIndex + 2) >= size)
-        return;
-
-        int y = dev_edges[edgeIndex + 2];
-        if(x != y){
-
-            start = x;
-            end   = y;
-        }
-
-        for(int i = start+1 ; i <= end ; i++ ){
-            dev_nodes[i] = (edgeIndex + 2) / 2; //always divisble by two
-        }
-
-    }
-    */
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;
     int start = 0;
     int end = 0;
      
@@ -113,6 +80,27 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
         }
 
     }
+    */
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    int step = numberOfBlocks * threadsPerBlock;
+    int prev, next;
+
+    for (int i = idx; i <= size; i += step) 
+    {
+        if(i > 0)
+            prev = dev_edges[(2 * (i - 1) + 1)];
+        else 
+            prev = -1;
+        if(i < size)
+            next = dev_edges[(2 * i + 1)];
+        else
+            next = n;
+        //int prev = i > 0 ? dev_edges[(2 * (i - 1) + 1)] : -1;
+        //int next = i < size ? dev_edges[(2 * i + 1)] : n;
+        for (int j = prev + 1; j <= next; ++j)
+            dev_nodes[j] = i;
+    }
+
 
 }
 
@@ -146,44 +134,7 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 }
 
 __global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result, int numberOfEdges){
-/*
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;    
-    int id;
-    uint count = 0;
-    for(int iter = idx; iter < numberOfEdges / 2; iter += step)
-    {
-        id = iter * 2;
-        // TODO: need to decide how many edges thread will be responsible for
-        //if(id >= numberOfEdges)
-        //    return;
 
-        int s = dev_edges[id];
-        int e = dev_edges[id + 1];
-
-        int s_start = dev_nodes[s];
-        int s_end = dev_nodes[s + 1];
-        int e_start = dev_nodes[e];
-        int e_end = dev_nodes[e + 1];
-        
-        int s_next,e_next;
-        while(s_start < s_end && e_start < e_end)
-        {
-            s_next = dev_edges[(s_start << 1) + 1];
-            e_next = dev_edges[(e_start << 1) + 1];
-            int difference = s_next - e_next;
-            if(difference == 0)
-                count++;
-            if(difference <= 0)
-                s_start += 1;
-            if(difference >= 0)
-                e_start += 1;
-        }
-
-
-    }
-    result[idx] = count;
-*/
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
     int count  = 0;
@@ -205,23 +156,27 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result
             s_next = dev_edges[(s_start << 1)];
             e_next = dev_edges[(e_start << 1)];
             int difference = s_next - e_next;
-            if(difference == 0)
-                count++;
-            if(difference <= 0)
+            if(difference < 0)
                 s_start += 1;
-            if(difference >= 0)
+            else if(difference > 0)
                 e_start += 1;
+            else {
+                s_start += 1;
+                e_start += 1;
+                count++;
+            }
         }
 
     
 
     }
     result[idx] = count;
+    //dev_edges[numberOfEdges + idx] = count;
 }
 void SortEdges(int m, int* edges) {
     thrust::device_ptr<uint64_t> ptr((uint64_t*)edges);
     thrust::sort(ptr, ptr + m);
-  }
+    }
 void remove(int* dev_edges,int numberOfEdges){
 
     thrust::device_ptr<int> ptr((int*)dev_edges);
@@ -231,7 +186,7 @@ void remove(int* dev_edges,int numberOfEdges){
 int NumVerticesGPU(int m, int* edges) {
     thrust::device_ptr<int> ptr(edges);
     return 1 + thrust::reduce(ptr, ptr + 2 * m, 0, thrust::maximum<int>());
-  }
+    }
 void parallelForward(const Edges& edges){
 
     int numberOfEdges = edges.size();
@@ -258,7 +213,7 @@ void parallelForward(const Edges& edges){
 
     // reuse the same node-array for everything to save space
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaDeviceSynchronize();
 
     printf("number of edges = %d\n", numberOfEdges);
@@ -273,7 +228,7 @@ void parallelForward(const Edges& edges){
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     //numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges/2,numberOfNodes);
     cudaDeviceSynchronize(); 
     // note = the actual index of the element in edge array is 2*nodeArray[i]
 
@@ -282,6 +237,8 @@ void parallelForward(const Edges& edges){
 
 
     //calculate the number of triangles
+    //change pointer to int in case of using dev_edges
+    //ptr = dev_edges + numberOfEdges
     thrust::device_ptr<uint64_t> ptr(result);
     uint64_t numberoftriangles =  thrust::reduce(ptr, ptr + (numberOfBlocks * threadsPerBlock));
 
