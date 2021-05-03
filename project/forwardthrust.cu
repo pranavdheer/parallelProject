@@ -108,26 +108,29 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
-    int id;
+    //int id;
     for(int iter = idx; iter < numberOfEdges; iter += step)
     {
         // access every second element
-        id = iter * 2; 
+        //id = iter * 2; 
 
-        // outofbound access
-        //if(id >= 2*numberOfEdges)
-        //return;
 
+        int2 sd_pair = ((int2*)dev_edges)[iter];
+        int sourceDegree = dev_nodes[(sd_pair.x) + 1] - dev_nodes[sd_pair.x];
+        int destinationDegree = dev_nodes[(sd_pair.y) + 1] - dev_nodes[sd_pair.y];
+        /*
         int source = dev_edges[id];
         int destination   = dev_edges[id + 1];
 
         int sourceDegree = dev_nodes[source+1] - dev_nodes[source];
         int destinationDegree = dev_nodes[destination+1] - dev_nodes[destination]; 
+        */
 
-
-        if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && destination < source)){
-            dev_edges[id] = FILTER;
-            dev_edges[id + 1] = FILTER;
+        //if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && destination < source)){
+        if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && sd_pair.y < sd_pair.x)){
+            //dev_edges[id] = FILTER;
+            //dev_edges[id + 1] = FILTER;
+            ((int2*)dev_edges)[iter] =  make_int2(FILTER, FILTER);
         }    
     }     
 
@@ -138,27 +141,44 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
     int count  = 0;
-        int id = 0;
+    //int id = 0;
     for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
 
-        id = iter * 2;
+        //id = iter * 2;
+        
+        /*
         int s = dev_edges[id];
         int e = dev_edges[id + 1];
-
-        int s_start = dev_nodes[s];
-        int s_end = dev_nodes[s + 1];
-        int e_start = dev_nodes[e];
-        int e_end = dev_nodes[e + 1];
-
-        int s_next,e_next;
+        */
+        int2 se_pair = ((int2*)dev_edges)[iter];
+        int s_start = dev_nodes[se_pair.x];
+        int s_end = dev_nodes[se_pair.x + 1];
+        int e_start = dev_nodes[se_pair.y];
+        int e_end = dev_nodes[se_pair.y + 1];
+        
+        int2 s_next,e_next;
         while(s_start < s_end && e_start < e_end)
         {
+            /*
             s_next = dev_edges[(s_start << 1)];
             e_next = dev_edges[(e_start << 1)];
             int difference = s_next - e_next;
             if(difference < 0)
                 s_start += 1;
             else if(difference > 0)
+                e_start += 1;
+            else {
+                s_start += 1;
+                e_start += 1;
+                count++;
+            }
+            */
+            s_next = ((int2*)dev_edges)[s_start];
+            e_next = ((int2*)dev_edges)[e_start];
+
+            if(s_next.x < e_next.x)
+                s_start += 1;
+            else if(s_next.x > e_next.x)
                 e_start += 1;
             else {
                 s_start += 1;
