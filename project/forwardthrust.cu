@@ -38,7 +38,7 @@ void debug(int *ptr,int size, string msg){
 
 }
 
-__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
+__global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int size, int n){
 /*
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
@@ -107,7 +107,7 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
 }
 
-__global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
+__global__ void filter(int* dev_edges,const int* __restrict__ dev_nodes,int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
