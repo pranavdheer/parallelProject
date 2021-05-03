@@ -87,14 +87,17 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
     for (int i = idx; i <= size; i += step) 
     {
+        // to remove the extra predication, all threads execute else
+        prev = -1;
         if(i > 0)
-            prev = dev_edges[(2 * (i - 1) + 1)];
-        else 
-            prev = -1;
+            prev = dev_edges[(2 * (i - 1)) + 1];
+        //else 
+        //    prev = -1;
+        next = n;
         if(i < size)
-            next = dev_edges[(2 * i + 1)];
-        else
-            next = n;
+            next = dev_edges[(2 * i) + 1];
+        //else
+        //    next = n;
         //int prev = i > 0 ? dev_edges[(2 * (i - 1) + 1)] : -1;
         //int next = i < size ? dev_edges[(2 * i + 1)] : n;
         for (int j = prev + 1; j <= next; ++j)
@@ -116,6 +119,7 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
 
         int2 sd_pair = ((int2*)dev_edges)[iter];
+        // can't use int2 because int2 pointer moves in multiples of 2
         int sourceDegree = dev_nodes[(sd_pair.x) + 1] - dev_nodes[sd_pair.x];
         int destinationDegree = dev_nodes[(sd_pair.y) + 1] - dev_nodes[sd_pair.y];
         /*
@@ -136,7 +140,7 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
 }
 
-__global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result, int numberOfEdges){
+__global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, uint64_t* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
@@ -173,18 +177,17 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, uint64_t* result
                 count++;
             }
             */
+            // TODO: need to run and check for speed, vector accesses might have increased execution time
             s_next = ((int2*)dev_edges)[s_start];
             e_next = ((int2*)dev_edges)[e_start];
 
-            if(s_next.x < e_next.x)
+            if(s_next.x <= e_next.x)
                 s_start += 1;
-            else if(s_next.x > e_next.x)
+            if(s_next.x >= e_next.x)
                 e_start += 1;
-            else {
-                s_start += 1;
-                e_start += 1;
+            if(s_next.x == e_next.x)
                 count++;
-            }
+            
         }
 
     
