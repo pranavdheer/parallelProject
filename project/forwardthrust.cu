@@ -17,8 +17,8 @@
 using namespace std;
 
 #define threadsPerBlock 1024
-#define numberOfBlocks 80
-#define FILTER -1
+#define numberOfBlocks 400
+#define FILTER -2
 
 // ptr =  cuda device pointer
 void debug(int *ptr,int size, string msg){
@@ -38,47 +38,78 @@ void debug(int *ptr,int size, string msg){
 
 }
 
+void compare(int *ptr1 , int *ptr2 ,int size){
+
+    int* deb1 = (int*)malloc(size * sizeof(int));
+    int* deb2 = (int*)malloc(size * sizeof(int));
+
+    cudaMemcpy(deb1,ptr1, size * sizeof(int), cudaMemcpyDeviceToHost);
+
+    cudaMemcpy(deb2,ptr2, size * sizeof(int), cudaMemcpyDeviceToHost);
+
+
+    for(int i=0 ;i<size;i++)
+        if(deb1[i] != deb2[i])
+          cout<<i<<" "<<deb1[i]<<" "<<deb2[i]<<endl;
+
+    free(deb1);
+    free(deb2);
+
+}
+//WORKING
+// __global__ void nodeArray2(int* dev_edges, int *dev_nodes,int size, int n){
+
+
+//     int idx = blockDim.x * blockIdx.x + threadIdx.x;
+//     int step = gridDim.x * blockDim.x;
+
+//     for( int id = idx; id <= size/2; id += step){
+        
+
+//         int start = id > 0 ? dev_edges[1 ? (2 * (id - 1) + 1) : (size/2 + id - 1)] : -1;
+//         int end = id < size/2 ? dev_edges[1 ? (2 * id + 1) : (size/2+ id)] : n;
+        
+//         // dealing with missing nodes
+//         for(int i = start+1 ; i <= end ; i++ ){  
+//             dev_nodes[i] = id; //always divisble by two
+//         }
+
+//     }
+// }    
+
 __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
+    int x,y;
 
-    for( int id = idx; ((id * 2) + 2) < size ; id += step){
-        
-        int start = 0;
-        int end = 0;
-        int edgeIndex = (id * 2) + 1; 
-        //use to calculate the degree of the last node
-        if(edgeIndex == 1){
-            // dev_nodes[n] = size >> 1;
-            dev_nodes[0] = 0;
-        }    
+    // bug-: node id that were not present, were not getting updated to zero 
+    // eg-: 0 and 1 is not present they should have nodeattay index as 0 [resolved]
+
+    if (idx == 0){
+
+        x = dev_edges[1];
+        for(int i=0 ;i<=x;i++)
+            dev_nodes[i] = 0;
+
+    }
     
-        int x = dev_edges[edgeIndex];
-        // early stopping condition or
-        // outofbound condition
-         
-        int y = dev_edges[edgeIndex + 2];
+    for( int id = idx; id < size/2; id += step){
         
-        if(x != y){
-
-            start = x;
-            end   = y;
-        }
-
-        else if (x == y && edgeIndex + 2 == size-1){
-
-            start = x;
-            end = n;
-            edgeIndex += 2; 
-
-        }
-
+        int edgeIndex = (id * 2) + 1;
+        
+        x = dev_edges[edgeIndex];
+        
+        if(id == size/2 - 1)
+          y = n;
+        
+        else  
+          y = dev_edges[edgeIndex + 2];
+        
         // dealing with missing nodes
-        for(int i = start+1 ; i <= end ; i++ ){
-    
-            dev_nodes[i] = (edgeIndex  + 2) >> 1; //always divisble by two
+        for(int i = x+1 ; i <= y ; i++ ){  
+            dev_nodes[i] = id + 1; //always divisble by two
         }
 
     }
@@ -147,7 +178,7 @@ __global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int
 void remove(int* dev_edges,int numberOfEdges){
 
     thrust::device_ptr<int> ptr((int*)dev_edges);
-    thrust::remove(ptr, ptr + 2*numberOfEdges , -1);
+    thrust::remove(ptr, ptr + 2*numberOfEdges , FILTER);
 
 }
 
@@ -166,36 +197,35 @@ void parallelForward(const Edges& edges){
     int* result;
     int numberOfNodes;
 
-    
+
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
     cudaMalloc(&result, numberOfBlocks * threadsPerBlock * sizeof(int));
-    
+
+
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
 
     sort(dev_edges,numberOfEdges);
 
-    // debug(dev_edges,numberOfEdges,"input");
+    // debug(dev_edges,numberOfEdges*2,"input");
 
     // Hardcoding the node value 
     numberOfNodes = 1696415;
     // numberOfNodes = 6;
-     
+
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
-    // reuse the same node-array for everything to save space
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaDeviceSynchronize();
 
-    // debug(dev_nodes,numberOfNodes+1,"node array");
+    // debug(dev_nodes,2,"node array");
      
     // compute the degree of the nodes
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2);
     cudaDeviceSynchronize();
 
-    
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
 
@@ -203,16 +233,16 @@ void parallelForward(const Edges& edges){
 
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
+
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaDeviceSynchronize(); 
+
 
     // debug(dev_nodes,numberOfNodes+1,"node array");
     
     // note = the actual index of the element in edge array is 2*nodeArray[i]
-    cout<<"start triangle counting"<<endl;
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
     cudaDeviceSynchronize();
-
 
     //calculate the number of triangles
     thrust::device_ptr<int> ptr(result);
