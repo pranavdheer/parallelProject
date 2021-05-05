@@ -38,6 +38,87 @@ void debug(int *ptr,int size, string msg){
 
 }
 
+__device__ void warp_reduce_sum(int smem[1024])
+{
+    smem[threadIdx.x] = smem[threadIdx.x+512] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+256] + smem[threadIdx.x]; __syncthreads();
+    smem[threadIdx.x] = smem[threadIdx.x+128] + smem[threadIdx.x]; __syncthreads();
+    smem[threadIdx.x] = smem[threadIdx.x+64] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+32] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+16] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+8] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+4] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+2] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+1] + smem[threadIdx.x]; __syncthreads();
+}
+__global__ void find_sum_final(int* in, int* out, int n, int remaining, int num_blocks)
+{
+	__shared__ int smem_sum[1024];
+
+	int idx = threadIdx.x + remaining;
+
+	int sum = 0;
+
+	// tail part
+	int iter = 0;
+	for(int i = 1; iter + idx < n; i++)
+	{
+		sum += in[idx + iter];
+        iter = i * threadsPerBlock;
+    }
+	iter = 0;
+	for(int i = 1; (iter + threadIdx.x) < num_blocks; i++)
+	{
+		sum += out[threadIdx.x + iter];
+		iter = i * threadsPerBlock;
+	}
+	smem_sum[threadIdx.x] = sum;
+    __syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_sum(smem_sum);
+
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_sum[threadIdx.x]; 
+}
+
+__global__ void find_sum(int* in, int* out, int elements_per_block)
+{
+
+	__shared__ int smem_sum[1024];
+
+	int idx = threadIdx.x + blockIdx.x * elements_per_block;
+	int sum = 0;
+	int elements_per_thread = elements_per_block / threadsPerBlock; 
+	
+    #pragma unroll
+    for(int i = 0; i < elements_per_thread; i++)
+        sum += in[idx + i * threadsPerBlock];
+
+	smem_sum[threadIdx.x] = sum;
+	__syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_sum(smem_sum);
+
+	if(threadIdx.x == 0) 
+		out[blockIdx.x] = smem_sum[threadIdx.x]; 
+}
+
+void calculateSum(int* d_in, int* d_out, int num_elements)
+{
+		
+	int num_blocks = 46;
+    int elements_per_block = num_elements/num_blocks;
+	int tail = num_elements - num_blocks * elements_per_block;
+	int remaining = num_elements - tail;
+
+	find_sum<<<num_blocks, threadsPerBlock>>>(d_in, d_out, elements_per_block); 
+    cudaDeviceSynchronize();
+
+	find_sum_final<<<1, threadsPerBlock>>>(d_in, d_out, num_elements, remaining, num_blocks);
+}
+
 
 __device__ void warp_reduce_max(int smem[1024])
 {
@@ -91,7 +172,7 @@ __global__ void find_max_final(int* in, int* out, int n, int remaining, int num_
     }
 
 	iter = 0;
-	for(int i = 0; (iter + threadIdx.x) < num_blocks; i++)
+	for(int i = 1; (iter + threadIdx.x) < num_blocks; i++)
 	{
 		val = out[threadIdx.x + iter];
 		max = val > max ? val : max;
@@ -164,41 +245,34 @@ __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int 
 /*
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
-    int start = 0;
-    int end = 0;
-     
-    for(int id = idx; ((id * 2) + 2) < size ; id += step){
+    int x,y;
 
-        int edgeIndex = (id * 2) + 1;        
-        //use to calculate the degree of the last node
-        if(edgeIndex == 1){
-            // dev_nodes[n] = size >> 1;
-            dev_nodes[0] = 0;
-        }    
+    // bug-: node id that were not present, were not getting updated to zero 
+    // eg-: 0 and 1 is not present they should have nodeattay index as 0 [resolved]
+
+    if (idx == 0){
+
+        x = dev_edges[1];
+        for(int i=0 ;i<=x;i++)
+            dev_nodes[i] = 0;
+
+    }
     
-        int x = dev_edges[edgeIndex];
-        // early stopping condition or
-        // outofbound condition
-         
-        int y = dev_edges[edgeIndex + 2];
+    for( int id = idx; id < size/2; id += step){
         
-        if(x != y){
-
-            start = x;
-            end   = y;
-        }
-
-        else if (x == y && edgeIndex + 2 == size-1){
-
-            start = x;
-            end = n;
-            edgeIndex += 2; 
-            // printf("condition = %d %d\n",start,end);
-        }
-
+        int edgeIndex = (id * 2) + 1;
+        
+        x = dev_edges[edgeIndex];
+        
+        if(id == size/2 - 1)
+          y = n;
+        
+        else  
+          y = dev_edges[edgeIndex + 2];
+        
         // dealing with missing nodes
-        for(int i = start+1 ; i <= end ; i++ ){
-            dev_nodes[i] = (edgeIndex  + 2) >> 1; //always divisble by two
+        for(int i = x+1 ; i <= y ; i++ ){  
+            dev_nodes[i] = id + 1; //always divisble by two
         }
 
     }
@@ -262,7 +336,7 @@ __global__ void filter(int* dev_edges,const int* __restrict__ dev_nodes,int numb
 
 }
 
-__global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, uint64_t* result, int numberOfEdges){
+__global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, int* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
@@ -339,7 +413,7 @@ void parallelForward(const Edges& edges){
     int* dev_edges;
     int* dev_nodes;
     int* d_out;
-    uint64_t *result;
+    int *result;
     //int numberOfBlocks;
     int numberOfNodes;
     int* out = (int*)malloc(sizeof(int));
@@ -386,12 +460,14 @@ void parallelForward(const Edges& edges){
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
     cudaDeviceSynchronize();
 
-
+    calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
     //calculate the number of triangles
     //change pointer to int in case of using dev_edges
     //ptr = dev_edges + numberOfEdges
-    thrust::device_ptr<uint64_t> ptr(result);
-    uint64_t numberoftriangles =  thrust::reduce(ptr, ptr + (numberOfBlocks * threadsPerBlock));
+    //thrust::device_ptr<int> ptr(result);
+    //int numberoftriangles =  thrust::reduce(ptr, ptr + (numberOfBlocks * threadsPerBlock));
+    cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
+    int numberoftriangles = (*out);
 
     //debug(result,numberOfNodes,"triangle array");
 
