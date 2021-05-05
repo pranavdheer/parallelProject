@@ -19,7 +19,7 @@ using namespace std;
 #define threadsPerBlock 1024
 #define numberOfBlocks 46
 #define FILTER -1
-
+#define inf 0x7f800000 
 // ptr =  cuda device pointer
 void debug(int *ptr,int size, string msg){
 
@@ -36,6 +36,128 @@ void debug(int *ptr,int size, string msg){
 
     free(deb);
 
+}
+
+
+__device__ void warp_reduce_max(int smem[1024])
+{
+    smem[threadIdx.x] = smem[threadIdx.x+512] > smem[threadIdx.x] ? 
+                        smem[threadIdx.x+512] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+256] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+256] : smem[threadIdx.x]; __syncthreads();
+
+    smem[threadIdx.x] = smem[threadIdx.x+128] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+128] : smem[threadIdx.x]; __syncthreads();
+
+    smem[threadIdx.x] = smem[threadIdx.x+64] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+64] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+32] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+32] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+16] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+16] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+8] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+8] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+4] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+4] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+2] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+2] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+1] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+1] : smem[threadIdx.x]; __syncthreads();
+
+}
+__global__ void find_max_final(int* in, int* out, int n, int remaining, int num_blocks)
+{
+	__shared__ int smem_max[1024];
+
+	int idx = threadIdx.x + remaining;
+
+	int max = -inf;
+	int val;
+
+	// tail part
+	int iter = 0;
+	for(int i = 1; iter + idx < n; i++)
+	{
+		val = in[idx + iter];
+		max = val > max ? val : max;
+        iter = i * threadsPerBlock;
+    }
+
+	iter = 0;
+	for(int i = 0; (iter + threadIdx.x) < num_blocks; i++)
+	{
+		val = out[threadIdx.x + iter];
+		max = val > max ? val : max;
+		iter = i * threadsPerBlock;
+	}
+
+	smem_max[threadIdx.x] = max;
+    __syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_max(smem_max);
+
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_max[threadIdx.x]; 
+}
+
+__global__ void find_max(int* in, int* out, int elements_per_block)
+{
+
+	__shared__ int smem_max[1024];
+
+	int idx = threadIdx.x + blockIdx.x * elements_per_block;
+
+	int max = -inf;
+
+	int val;
+
+	int elements_per_thread = elements_per_block / threadsPerBlock; 
+	
+    #pragma unroll
+    for(int i = 0; i < elements_per_thread; i++)
+    {
+        val = in[idx + i * threadsPerBlock];
+        max = val > max ? val : max;
+
+    }
+
+	smem_max[threadIdx.x] = max;
+	__syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_max(smem_max);
+	
+
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_max[threadIdx.x]; 
+	
+
+}
+
+void calculateNumVertices(int* d_in, int* d_out, int num_elements)
+{
+
+	//int elements_per_block = ; // needs to be set (random right now) ( = m * 2 / number of blocks)
+		
+	int num_blocks = numberOfBlocks;//46;//num_elements / elements_per_block; // redundant
+    int elements_per_block = num_elements / num_blocks;
+	int tail = num_elements - num_blocks * elements_per_block;
+	int remaining = num_elements - tail;
+    //printf("helo\n");
+	find_max<<<num_blocks, threadsPerBlock>>>(d_in, d_out, elements_per_block); 
+    cudaDeviceSynchronize();
+
+	find_max_final<<<1, threadsPerBlock>>>(d_in, d_out, num_elements, remaining, num_blocks);
+    //printf("dout %d \n", *d_out );
+	
 }
 
 __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int size, int n){
@@ -161,6 +283,7 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
         int e_end = dev_nodes[se_pair.y + 1];
         
         int2 s_next,e_next;
+
         while(s_start < s_end && e_start < e_end)
         {
             /*
@@ -182,9 +305,9 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
             e_next = ((int2*)dev_edges)[e_start];
 
             if(s_next.x <= e_next.x)
-                s_start += 1;
+                s_start+=1;
             if(s_next.x >= e_next.x)
-                e_start += 1;
+                e_start+=1;
             if(s_next.x == e_next.x)
                 count++;
             
@@ -215,10 +338,11 @@ void parallelForward(const Edges& edges){
     int numberOfEdges = edges.size();
     int* dev_edges;
     int* dev_nodes;
+    int* d_out;
     uint64_t *result;
     //int numberOfBlocks;
     int numberOfNodes;
-
+    int* out = (int*)malloc(sizeof(int));
     // TODO-: sort the edges
     
     // transfer data to GPU
@@ -226,9 +350,13 @@ void parallelForward(const Edges& edges){
     cudaMalloc(&result, numberOfBlocks * threadsPerBlock * sizeof(uint64_t));
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
+    cudaMalloc(&d_out, 2 * numberOfEdges * sizeof(int));
 
     // Hardcoding the node value 
-    numberOfNodes = NumVerticesGPU(numberOfEdges, dev_edges);
+    calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
+    cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
+    numberOfNodes = 1 + (*out);
+    printf("number of nodes = %d\n", numberOfNodes);
     // numberOfNodes = 4;
     SortEdges(numberOfEdges, dev_edges);
     // allocate space for the node array
@@ -247,7 +375,7 @@ void parallelForward(const Edges& edges){
 
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
-    printf("hello\n");
+    //printf("hello\n");
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     //numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
