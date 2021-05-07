@@ -408,7 +408,7 @@ int NumVerticesGPU(int m, int* edges) {
     return 1 + thrust::reduce(ptr, ptr + 2 * m, 0, thrust::maximum<int>());
     }
 void parallelForward(const Edges& edges){
-
+    double startKernelTime = CycleTimer::currentSeconds();
     int numberOfEdges = edges.size();
     int* dev_edges;
     int* dev_nodes;
@@ -417,7 +417,18 @@ void parallelForward(const Edges& edges){
     //int numberOfBlocks;
     int numberOfNodes;
     int* out = (int*)malloc(sizeof(int));
-    // TODO-: sort the edges
+
+
+    cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, stopFilter, startTriCount, stopTriCount;
+
+    cudaEventCreate(&startNodeArray1);
+    cudaEventCreate(&stopNodeArray1);
+    cudaEventCreate(&startNodeArray2);
+    cudaEventCreate(&stopNodeArray2);
+    cudaEventCreate(&startFilter);
+    cudaEventCreate(&stopFilter);
+    cudaEventCreate(&startTriCount);
+    cudaEventCreate(&stopTriCount);
     
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
@@ -438,13 +449,17 @@ void parallelForward(const Edges& edges){
 
     // reuse the same node-array for everything to save space
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
+    cudaEventRecord(startNodeArray1);
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
+    cudaEventRecord(stopNodeArray1);
     cudaDeviceSynchronize();
 
     printf("number of edges = %d\n", numberOfEdges);
     // compute the degree of the nodes
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
+    cudaEventRecord(startFilter);
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges);
+    cudaEventRecord(stopFilter);
     cudaDeviceSynchronize();
 
     //remove the filtered edges
@@ -453,11 +468,14 @@ void parallelForward(const Edges& edges){
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     //numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
+    cudaEventRecord(startNodeArray2);
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges/2,numberOfNodes);
+    cudaEventRecord(stopNodeArray2);
     cudaDeviceSynchronize(); 
     // note = the actual index of the element in edge array is 2*nodeArray[i]
-
+    cudaEventRecord(startTriCount);
     trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
+    cudaEventRecord(stopTriCount);
     cudaDeviceSynchronize();
 
     calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
@@ -472,9 +490,38 @@ void parallelForward(const Edges& edges){
     //debug(result,numberOfNodes,"triangle array");
 
     printf("number of triangles = %lld\n",numberoftriangles);
+
+    float m1 = 0;
+    cudaEventElapsedTime(&m1, startNodeArray1, stopNodeArray1);
+    printf("CUDA Elapsed Time for Node Array 1 %f ms\n", m1);
+
+    float m2 = 0;
+    cudaEventElapsedTime(&m2, startFilter, stopFilter);
+    printf("CUDA Elapsed Time for Filter %f ms\n", m2);
+
+    float m3 = 0;
+    cudaEventElapsedTime(&m3, startNodeArray2, stopNodeArray2);
+    printf("CUDA Elapsed Time for Node Array 2 %f ms\n", m3);
+
+    float m4 = 0;
+    cudaEventElapsedTime(&m4, startTriCount, stopTriCount);
+    printf("CUDA Elapsed Time for Triangle Counting %f ms\n", m4);
+
+    cudaEventDestroy(startNodeArray1);
+    cudaEventDestroy(stopNodeArray1);
+    cudaEventDestroy(startNodeArray2);
+    cudaEventDestroy(stopNodeArray2);
+    cudaEventDestroy(startFilter);
+    cudaEventDestroy(stopFilter);
+    cudaEventDestroy(startTriCount);
+    cudaEventDestroy(stopTriCount);
+
     cudaFree(result);
     cudaFree(dev_edges);
     cudaFree(dev_nodes);
+    double endKernelTime = CycleTimer::currentSeconds();
+    double kernelDuration = endKernelTime - startKernelTime;
+    printf("KernelDuration: %.3f ms\n", 1000.f * kernelDuration);
 
 }
 
