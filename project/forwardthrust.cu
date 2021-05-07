@@ -357,6 +357,8 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
         int e_end = dev_nodes[se_pair.y + 1];
         
         int2 s_next,e_next;
+        s_next = ((int2*)dev_edges)[s_start];
+        e_next = ((int2*)dev_edges)[e_start];
 
         while(s_start < s_end && e_start < e_end)
         {
@@ -375,14 +377,19 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
             }
             */
             // TODO: need to run and check for speed, vector accesses might have increased execution time
-            s_next = ((int2*)dev_edges)[s_start];
-            e_next = ((int2*)dev_edges)[e_start];
+            int a = s_next.x;
+            int b = e_next.x;
 
-            if(s_next.x <= e_next.x)
+
+            if(a <= b) {
                 s_start+=1;
-            if(s_next.x >= e_next.x)
+                s_next = ((int2*)dev_edges)[s_start];
+            }
+            if(a >= b) {
                 e_start+=1;
-            if(s_next.x == e_next.x)
+                e_next = ((int2*)dev_edges)[e_start];
+            }
+            if(a == b)
                 count++;
             
         }
@@ -419,7 +426,7 @@ void parallelForward(const Edges& edges){
     int* out = (int*)malloc(sizeof(int));
 
 
-    cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, stopFilter, startTriCount, stopTriCount;
+    cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, stopFilter, startTriCount, stopTriCount, startNumVertices, stopNumVertices, startSumTri, stopSumTri;
 
     cudaEventCreate(&startNodeArray1);
     cudaEventCreate(&stopNodeArray1);
@@ -429,6 +436,10 @@ void parallelForward(const Edges& edges){
     cudaEventCreate(&stopFilter);
     cudaEventCreate(&startTriCount);
     cudaEventCreate(&stopTriCount);
+    cudaEventCreate(&startNumVertices);
+    cudaEventCreate(&stopNumVertices);
+    cudaEventCreate(&startSumTri);
+    cudaEventCreate(&stopSumTri);
     
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
@@ -438,7 +449,9 @@ void parallelForward(const Edges& edges){
     cudaMalloc(&d_out, 2 * numberOfEdges * sizeof(int));
 
     // Hardcoding the node value 
+    cudaEventRecord(startNumVertices);
     calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
+    cudaEventRecord(stopNumVertices);
     cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
     numberOfNodes = 1 + (*out);
     printf("number of nodes = %d\n", numberOfNodes);
@@ -478,7 +491,10 @@ void parallelForward(const Edges& edges){
     cudaEventRecord(stopTriCount);
     cudaDeviceSynchronize();
 
+    cudaEventRecord(startSumTri);
     calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
+    cudaEventRecord(stopSumTri);
+
     //calculate the number of triangles
     //change pointer to int in case of using dev_edges
     //ptr = dev_edges + numberOfEdges
@@ -499,6 +515,10 @@ void parallelForward(const Edges& edges){
     cudaEventElapsedTime(&m2, startFilter, stopFilter);
     printf("CUDA Elapsed Time for Filter %f ms\n", m2);
 
+    float m5 = 0;
+    cudaEventElapsedTime(&m5, startNumVertices, stopNumVertices);
+    printf("CUDA Elapsed Time for Num Vertices %f ms\n", m5);
+
     float m3 = 0;
     cudaEventElapsedTime(&m3, startNodeArray2, stopNodeArray2);
     printf("CUDA Elapsed Time for Node Array 2 %f ms\n", m3);
@@ -506,6 +526,10 @@ void parallelForward(const Edges& edges){
     float m4 = 0;
     cudaEventElapsedTime(&m4, startTriCount, stopTriCount);
     printf("CUDA Elapsed Time for Triangle Counting %f ms\n", m4);
+
+    float m6 = 0;
+    cudaEventElapsedTime(&m6, startSumTri, stopSumTri);
+    printf("CUDA Elapsed Time for Sume Triangles %f ms\n", m6);
 
     cudaEventDestroy(startNodeArray1);
     cudaEventDestroy(stopNodeArray1);
@@ -515,6 +539,10 @@ void parallelForward(const Edges& edges){
     cudaEventDestroy(stopFilter);
     cudaEventDestroy(startTriCount);
     cudaEventDestroy(stopTriCount);
+    cudaEventDestroy(startNumVertices);
+    cudaEventDestroy(stopNumVertices);
+    cudaEventDestroy(startSumTri);
+    cudaEventDestroy(stopSumTri);
 
     cudaFree(result);
     cudaFree(dev_edges);
