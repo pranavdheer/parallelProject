@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include<iostream>
+#include<stdint.h>
 
 // CUDA runtime
 #include <cuda.h>
@@ -36,6 +37,112 @@ void debug(int *ptr,int size, string msg){
 
     free(deb);
 
+}
+__global__ void predicateDevice(uint64_t *d_array , uint64_t *d_predicateArray , int d_numberOfElements,uint64_t bit,int bitset)
+{
+    int index = threadIdx.x + blockIdx.x*blockDim.x;
+    if(index < d_numberOfElements)
+            d_predicateArray[index] = (bitset) ? ((d_array[index] & bit) ? 1 : 0) : ((!(d_array[index] & bit)) ? 1 : 0);
+}
+
+__global__ void scatter(uint64_t *d_array , uint64_t *d_scanArray , uint64_t *d_predicateArray,uint64_t * d_scatteredArray ,int d_numberOfElements,int offset)
+{
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if(index < d_numberOfElements)
+        if(d_predicateArray[index])
+            d_scatteredArray[d_scanArray[index] - 1 + offset] = d_array[index];
+}
+__global__ void scanDevice(uint64_t *d_array , int numberOfElements, uint64_t *d_tmpArray,int moveIndex)
+{
+    int index = threadIdx.x + blockDim.x * blockIdx.x;
+    if(index > numberOfElements)
+        return;
+    d_tmpArray[index] = d_array[index];
+    if(index - moveIndex >= 0)
+        d_tmpArray[index] = d_tmpArray[index] +d_array[index - moveIndex];
+}
+uint64_t* scanHost(uint64_t *d_scanArray,int numberOfElements, int sortBlocks)
+{
+    uint64_t *d_tmpArray;
+    uint64_t *d_tmpArray1;
+    cudaMalloc(&d_tmpArray1,sizeof(uint64_t)*numberOfElements);
+    cudaMalloc(&d_tmpArray,sizeof(uint64_t)*numberOfElements);
+    cudaMemcpy(d_tmpArray1,d_scanArray,sizeof(uint64_t)*numberOfElements,cudaMemcpyDeviceToDevice);
+    int j,k=0;
+    for(j=1;j<numberOfElements;j= j*2,k++)
+    {
+        if(k%2 == 0)
+        {
+            scanDevice<<<sortBlocks,threadsPerBlock>>>(d_tmpArray1,numberOfElements,d_tmpArray, j);
+            cudaDeviceSynchronize();
+        }
+        else
+        {
+            scanDevice<<<sortBlocks,threadsPerBlock>>>(d_tmpArray,numberOfElements,d_tmpArray1, j);
+            cudaDeviceSynchronize();
+        }
+    } 
+    cudaDeviceSynchronize();
+    if(k%2 == 0)
+        return d_tmpArray1;
+    else
+        return d_tmpArray;
+}
+
+uint64_t *partition(uint64_t *d_array,int numberOfElements,uint64_t bit, int sortBlocks)
+{   
+    int offset;
+    uint64_t *d_predicateArray;
+    //printf("hello from part");
+    cudaMalloc((void**)&d_predicateArray,sizeof(uint64_t)*numberOfElements);
+    predicateDevice<<<sortBlocks,threadsPerBlock>>>(d_array,d_predicateArray,numberOfElements,bit,0);
+    uint64_t *d_scanArray;
+    d_scanArray = scanHost(d_predicateArray,numberOfElements, sortBlocks);
+    uint64_t *d_scatteredArray;
+    cudaMalloc((void**)&d_scatteredArray,sizeof(uint64_t)*numberOfElements);
+
+    scatter<<<sortBlocks,threadsPerBlock>>>(d_array,d_scanArray,d_predicateArray,d_scatteredArray, numberOfElements,0);
+    cudaMemcpy(&offset,d_scanArray+numberOfElements-1,sizeof(uint64_t),cudaMemcpyDeviceToHost);
+    predicateDevice<<<sortBlocks,threadsPerBlock>>>(d_array,d_predicateArray,numberOfElements,bit,1);
+    d_scanArray = scanHost(d_predicateArray,numberOfElements, sortBlocks);
+    scatter<<<sortBlocks,threadsPerBlock>>>(d_array,d_scanArray,d_predicateArray,d_scatteredArray, numberOfElements,offset);
+    return d_scatteredArray;
+}
+int offset;
+uint64_t *split(uint64_t *d_array,int numberOfElements,uint64_t bit,int bitset, int sortBlocks)
+{   
+    uint64_t *d_predicateArray;
+    //printf("hello from split");
+    cudaMalloc((void**)&d_predicateArray,sizeof(uint64_t)*numberOfElements);
+    predicateDevice<<<sortBlocks,threadsPerBlock>>>(d_array,d_predicateArray,numberOfElements,bit,bitset);
+    uint64_t *d_scanArray;
+    d_scanArray = scanHost(d_predicateArray,numberOfElements, sortBlocks);
+    uint64_t *d_scatteredArray;
+    cudaMemcpy(&offset,d_scanArray+numberOfElements-1,sizeof(uint64_t),cudaMemcpyDeviceToHost);
+    cudaMalloc((void**)&d_scatteredArray,sizeof(uint64_t)*offset);
+    scatter<<<sortBlocks,threadsPerBlock>>>(d_array,d_scanArray,d_predicateArray,d_scatteredArray, numberOfElements,0);
+    return d_scatteredArray;
+}
+
+void SortEdges(uint64_t *d_array , int numberOfElements, int sortBlocks)
+{
+    uint64_t bit;
+    //printf("hello");
+    uint64_t *d_negativeArray = split(d_array,numberOfElements,1LU<<63,1, sortBlocks);
+    for(int i=0;i<sizeof(uint64_t)*8;i++)
+    {
+        bit = 1LU<<i;
+        d_negativeArray = partition(d_negativeArray,offset,bit, sortBlocks);
+    }
+    uint64_t *d_postiveArray = split(d_array,numberOfElements,1LU<<63,0, sortBlocks);
+    for(int i=0;i<sizeof(uint64_t)*8;i++)
+    {
+        bit = 1LU<<i;
+        d_postiveArray = partition(d_postiveArray,offset,bit, sortBlocks);
+    }
+    cudaMemcpy(d_array,d_negativeArray,sizeof(uint64_t)*(numberOfElements-offset),cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_array+(numberOfElements-offset),d_postiveArray,sizeof(uint64_t)*offset,cudaMemcpyDeviceToDevice);
+  
 }
 
 __device__ void warp_reduce_sum(int smem[1024])
@@ -287,15 +394,9 @@ __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int 
         prev = -1;
         if(i > 0)
             prev = dev_edges[(2 * (i - 1)) + 1];
-        //else 
-        //    prev = -1;
         next = n;
         if(i < size)
             next = dev_edges[(2 * i) + 1];
-        //else
-        //    next = n;
-        //int prev = i > 0 ? dev_edges[(2 * (i - 1) + 1)] : -1;
-        //int next = i < size ? dev_edges[(2 * i + 1)] : n;
         for (int j = prev + 1; j <= next; ++j)
             dev_nodes[j] = i;
     }
@@ -378,12 +479,16 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
             s_next = ((int2*)dev_edges)[s_start];
             e_next = ((int2*)dev_edges)[e_start];
 
-            if(s_next.x <= e_next.x)
+            if(s_next.x < e_next.x)
                 s_start+=1;
-            if(s_next.x >= e_next.x)
+            else if(s_next.x > e_next.x)
                 e_start+=1;
-            if(s_next.x == e_next.x)
+            else
+            {
+                s_start += 1;
+                e_start += 1;
                 count++;
+            }
             
         }
 
@@ -393,14 +498,16 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
     result[idx] = count;
     //dev_edges[numberOfEdges + idx] = count;
 }
+/*
 void SortEdges(int m, int* edges) {
     thrust::device_ptr<uint64_t> ptr((uint64_t*)edges);
     thrust::sort(ptr, ptr + m);
     }
+*/
 void remove(int* dev_edges,int numberOfEdges){
 
     thrust::device_ptr<int> ptr((int*)dev_edges);
-    thrust::remove(ptr, ptr + 2*numberOfEdges , -1);
+    thrust::remove(ptr, ptr + 2 * numberOfEdges , -1);
 
 }
 int NumVerticesGPU(int m, int* edges) {
@@ -432,10 +539,16 @@ void parallelForward(const Edges& edges){
     numberOfNodes = 1 + (*out);
     printf("number of nodes = %d\n", numberOfNodes);
     // numberOfNodes = 4;
-    SortEdges(numberOfEdges, dev_edges);
+    int sortBlocks = numberOfEdges / threadsPerBlock;
+    if(numberOfEdges % threadsPerBlock != 0)
+        sortBlocks += 1;
+    uint64_t *pt = (uint64_t *)dev_edges;
+    SortEdges(pt, numberOfEdges, sortBlocks);
+    //SortEdges(numberOfEdges, dev_edges);
+    cudaDeviceSynchronize();
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
-
+    debug(dev_edges, 2 * numberOfEdges, "sorted array");
     // reuse the same node-array for everything to save space
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
@@ -446,10 +559,11 @@ void parallelForward(const Edges& edges){
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges);
     cudaDeviceSynchronize();
-
+    debug(dev_edges, 2 * numberOfEdges, "filter");
+    printf("hello\n");
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
-    //printf("hello\n");
+
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
     //numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
