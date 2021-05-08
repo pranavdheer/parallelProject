@@ -242,7 +242,7 @@ void calculateNumVertices(int* d_in, int* d_out, int num_elements)
 }
 
 __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int size, int n){
-/*
+
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
     int x,y;
@@ -276,7 +276,7 @@ __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int 
         }
 
     }
-    */
+    /*
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = numberOfBlocks * threadsPerBlock;
     int prev, next;
@@ -299,6 +299,7 @@ __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int 
         for (int j = prev + 1; j <= next; ++j)
             dev_nodes[j] = i;
     }
+    */
 
 
 }
@@ -381,16 +382,21 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
             int b = e_next.x;
 
 
-            if(a <= b) {
+            if(a < b) {
                 s_start+=1;
                 s_next = ((int2*)dev_edges)[s_start];
             }
-            if(a >= b) {
+            else if(a > b) {
                 e_start+=1;
                 e_next = ((int2*)dev_edges)[e_start];
             }
-            if(a == b)
+            else {
                 count++;
+                s_start+=1;
+                s_next = ((int2*)dev_edges)[s_start];
+                e_start+=1;
+                e_next = ((int2*)dev_edges)[e_start];
+            }
             
         }
 
@@ -463,7 +469,7 @@ void parallelForward(const Edges& edges){
     // reuse the same node-array for everything to save space
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     cudaEventRecord(startNodeArray1);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaEventRecord(stopNodeArray1);
     cudaDeviceSynchronize();
 
@@ -482,7 +488,7 @@ void parallelForward(const Edges& edges){
     //note = new size of the edge array is now numberOfEdges
     //numberOfBlocks = (numberOfEdges/2 + threadsPerBlock - 1) / threadsPerBlock;
     cudaEventRecord(startNodeArray2);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges/2,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaEventRecord(stopNodeArray2);
     cudaDeviceSynchronize(); 
     // note = the actual index of the element in edge array is 2*nodeArray[i]
@@ -547,6 +553,8 @@ void parallelForward(const Edges& edges){
     cudaFree(result);
     cudaFree(dev_edges);
     cudaFree(dev_nodes);
+    cudaFree(d_out);
+    free(out);
     double endKernelTime = CycleTimer::currentSeconds();
     double kernelDuration = endKernelTime - startKernelTime;
     printf("KernelDuration: %.3f ms\n", 1000.f * kernelDuration);
