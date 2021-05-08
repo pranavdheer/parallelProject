@@ -19,6 +19,7 @@ using namespace std;
 #define threadsPerBlock 1024
 #define numberOfBlocks 400
 #define FILTER -2
+#define inf 0x7f800000 
 
 // ptr =  cuda device pointer
 void debug(int *ptr,int size, string msg){
@@ -95,65 +96,187 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
     }
 }    
 
-__global__ void filter(int* dev_edges,int* dev_nodes,int size){
+__global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
     int id = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
 
-    for(id = id*2; id < size ; id += step){
+    for(id = id; id < numberOfEdges ; id += step){
 
-        int source = dev_edges[id];
-        int destination   = dev_edges[id+1];
+        int2 sd_pair = ((int2*)dev_edges)[id];
 
-        int sourceDegree = dev_nodes[source+1] - dev_nodes[source];
-        int destinationDegree = dev_nodes[destination+1] - dev_nodes[destination]; 
+        int sourceDegree = dev_nodes[(sd_pair.x)+1] - dev_nodes[sd_pair.x];
+        int destinationDegree = dev_nodes[(sd_pair.y) + 1] - dev_nodes[sd_pair.y]; 
 
+        if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && sd_pair.y < sd_pair.x)){
 
-        if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && destination < source)){
-            dev_edges[id] = FILTER;
-            dev_edges[id + 1] = FILTER;
+            ((int2*)dev_edges)[id] =  make_int2(FILTER, FILTER);
+
         }         
     }
-}    
+}   
 
-__global__ void trianglecounting(int* dev_edges,int* dev_nodes, int* result, int numberOfEdges){
+__device__ void warp_reduce_max(int smem[1024])
+{
+    smem[threadIdx.x] = smem[threadIdx.x+512] > smem[threadIdx.x] ? 
+                        smem[threadIdx.x+512] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+256] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+256] : smem[threadIdx.x]; __syncthreads();
+
+    smem[threadIdx.x] = smem[threadIdx.x+128] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+128] : smem[threadIdx.x]; __syncthreads();
+
+    smem[threadIdx.x] = smem[threadIdx.x+64] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+64] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+32] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+32] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+16] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+16] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+8] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+8] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+4] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+4] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+2] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+2] : smem[threadIdx.x]; __syncthreads();
+
+	smem[threadIdx.x] = smem[threadIdx.x+1] > smem[threadIdx.x] ? 
+						smem[threadIdx.x+1] : smem[threadIdx.x]; __syncthreads();
+}
+
+__global__ void find_max(int* in, int* out, int elements_per_block)
+{
+
+	__shared__ int smem_max[1024];
+
+	int idx = threadIdx.x + blockIdx.x * elements_per_block;
+	int max = -inf;
+	int val;
+	int elements_per_thread = elements_per_block / threadsPerBlock; 
+	
+    #pragma unroll
+    for(int i = 0; i < elements_per_thread; i++)
+    {
+        val = in[idx + i * threadsPerBlock];
+        max = val > max ? val : max;
+
+    }
+
+	smem_max[threadIdx.x] = max;
+	__syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_max(smem_max);
+	
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_max[threadIdx.x]; 
+	
+}
+
+__global__ void find_max_final(int* in, int* out, int n, int remaining, int num_blocks)
+{
+	__shared__ int smem_max[1024];
+
+	int idx = threadIdx.x + remaining;
+
+	int max = -inf;
+	int val;
+
+	// tail part
+	int iter = 0;
+	for(int i = 1; iter + idx < n; i++)
+	{
+		val = in[idx + iter];
+		max = val > max ? val : max;
+        iter = i * threadsPerBlock;
+    }
+
+	iter = 0;
+	for(int i = 1; (iter + threadIdx.x) < num_blocks; i++)
+	{
+		val = out[threadIdx.x + iter];
+		max = val > max ? val : max;
+		iter = i * threadsPerBlock;
+	}
+
+	smem_max[threadIdx.x] = max;
+    __syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_max(smem_max);
+
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_max[threadIdx.x]; 
+}
+
+
+void calculateNumVertices(int* d_in, int* d_out, int num_elements)
+{
+
+	//int elements_per_block = ; // needs to be set (random right now) ( = m * 2 / number of blocks)
+		
+	int num_blocks = numberOfBlocks;//46;//num_elements / elements_per_block; // redundant
+    int elements_per_block = num_elements / num_blocks;
+	int tail = num_elements - num_blocks * elements_per_block;
+	int remaining = num_elements - tail;
+
+	find_max<<<num_blocks, threadsPerBlock>>>(d_in, d_out, elements_per_block); 
+    cudaDeviceSynchronize();
+
+	find_max_final<<<1, threadsPerBlock>>>(d_in, d_out, num_elements, remaining, num_blocks);
+
+	
+}
+
+
+__global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, int* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;    
-    int count = 0;
-    int id = 0;
-    
-    for(int iter = idx; iter < numberOfEdges/2; iter = iter + step)
-    {
-      
-        id = iter *2;
-        int s = dev_edges[id];
-        int e = dev_edges[id + 1];
+    int step = gridDim.x * blockDim.x;
+    int count  = 0;
+ 
+    for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
 
-        int s_start = dev_nodes[s];
-        int s_end = dev_nodes[s + 1];
-        int e_start = dev_nodes[e];
-        int e_end = dev_nodes[e + 1];
-        int s_next,e_next;
+        int2 se_pair = ((int2*)dev_edges)[iter];
+        int s_start = dev_nodes[se_pair.x];
+        int s_end = dev_nodes[se_pair.x + 1];
+        int e_start = dev_nodes[se_pair.y];
+        int e_end = dev_nodes[se_pair.y + 1];
+        
+        int2 s_next,e_next;
+        s_next = ((int2*)dev_edges)[s_start];
+        e_next = ((int2*)dev_edges)[e_start];
 
-        // printf("id = %d,s = %d, s_start = %d \n",id,s,s_start);
         while(s_start < s_end && e_start < e_end)
         {
-            s_next = dev_edges[(s_start << 1)];
-            e_next = dev_edges[(e_start << 1)];
-            int difference = s_next - e_next;
-            // printf("I am here %d\n",difference);
-            if(difference == 0)
+            // need to run and check for speed, vector accesses might have increased execution time
+            int a = s_next.x;
+            int b = e_next.x;
+
+            if(a < b) {
+                s_start+=1;
+                s_next = ((int2*)dev_edges)[s_start];
+            }
+            else if(a > b) {
+                e_start+=1;
+                e_next = ((int2*)dev_edges)[e_start];
+            }
+            else {
                 count++;
-            if(difference <= 0)
-                s_start += 1;
-            if(difference >= 0)
-                e_start += 1;
+                s_start+=1;
+                s_next = ((int2*)dev_edges)[s_start];
+                e_start+=1;
+                e_next = ((int2*)dev_edges)[e_start];
+            }   
         }
     }
     result[idx] = count;
-
-}    
+}
 
 void remove(int* dev_edges,int numberOfEdges){
 
@@ -169,6 +292,93 @@ void sort(int* dev_edges,int numberOfEdges){
     thrust::sort(ptr, ptr + numberOfEdges);
 }
 
+int NumVerticesGPU(int m, int* edges) {
+    thrust::device_ptr<int> ptr(edges);
+    return 1 + thrust::reduce(ptr, ptr + 2 * m, 0, thrust::maximum<int>());
+}
+
+__device__ void warp_reduce_sum(int smem[1024])
+{
+    smem[threadIdx.x] = smem[threadIdx.x+512] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+256] + smem[threadIdx.x]; __syncthreads();
+    smem[threadIdx.x] = smem[threadIdx.x+128] + smem[threadIdx.x]; __syncthreads();
+    smem[threadIdx.x] = smem[threadIdx.x+64] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+32] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+16] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+8] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+4] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+2] + smem[threadIdx.x]; __syncthreads();
+	smem[threadIdx.x] = smem[threadIdx.x+1] + smem[threadIdx.x]; __syncthreads();
+}
+
+__global__ void find_sum_final(int* in, int* out, int n, int remaining, int num_blocks)
+{
+	__shared__ int smem_sum[1024];
+
+	int idx = threadIdx.x + remaining;
+
+	int sum = 0;
+
+	// tail part
+	int iter = 0;
+	for(int i = 1; iter + idx < n; i++)
+	{
+		sum += in[idx + iter];
+        iter = i * threadsPerBlock;
+    }
+	iter = 0;
+	for(int i = 1; (iter + threadIdx.x) < num_blocks; i++)
+	{
+		sum += out[threadIdx.x + iter];
+		iter = i * threadsPerBlock;
+	}
+	smem_sum[threadIdx.x] = sum;
+    __syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_sum(smem_sum);
+
+	if(threadIdx.x == 0)
+		out[blockIdx.x] = smem_sum[threadIdx.x]; 
+}
+
+__global__ void find_sum(int* in, int* out, int elements_per_block)
+{
+
+	__shared__ int smem_sum[1024];
+
+	int idx = threadIdx.x + blockIdx.x * elements_per_block;
+	int sum = 0;
+	int elements_per_thread = elements_per_block / threadsPerBlock; 
+	
+    #pragma unroll
+    for(int i = 0; i < elements_per_thread; i++)
+        sum += in[idx + i * threadsPerBlock];
+
+	smem_sum[threadIdx.x] = sum;
+	__syncthreads();
+
+	if(threadIdx.x < 512)
+		warp_reduce_sum(smem_sum);
+
+	if(threadIdx.x == 0) 
+		out[blockIdx.x] = smem_sum[threadIdx.x]; 
+}
+
+void calculateSum(int* d_in, int* d_out, int num_elements)
+{
+		
+	int num_blocks = numberOfBlocks;
+    int elements_per_block = num_elements/num_blocks;
+	int tail = num_elements - num_blocks * elements_per_block;
+	int remaining = num_elements - tail;
+
+	find_sum<<<num_blocks, threadsPerBlock>>>(d_in, d_out, elements_per_block); 
+    cudaDeviceSynchronize();
+
+	find_sum_final<<<1, threadsPerBlock>>>(d_in, d_out, num_elements, remaining, num_blocks);
+}
+
 void parallelForward(const Edges& edges){
 
     double startKernelTime = CycleTimer::currentSeconds();
@@ -177,10 +387,12 @@ void parallelForward(const Edges& edges){
     int* dev_edges;
     int* dev_nodes;
     int* result;
+    int* d_out;
     int numberOfNodes;
+    int* out = (int*)malloc(sizeof(int));
 
     cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, 
-    stopFilter, startTriCount, stopTriCount;
+    stopFilter, startTriCount, stopTriCount,startNumvertices,stopNumvertices, startSumTri, stopSumTri;
 
     // timer code
     cudaEventCreate(&startNodeArray1);
@@ -194,11 +406,17 @@ void parallelForward(const Edges& edges){
 
     cudaEventCreate(&startTriCount);
     cudaEventCreate(&stopTriCount);
-     
+
+    cudaEventCreate(&startNumvertices);
+    cudaEventCreate(&stopNumvertices);
+
+    cudaEventCreate(&startSumTri);
+    cudaEventCreate(&stopSumTri);
 
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
     cudaMalloc(&result, numberOfBlocks * threadsPerBlock * sizeof(int));
+    cudaMalloc(&d_out, 2 * numberOfEdges * sizeof(int));
 
 
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
@@ -208,9 +426,13 @@ void parallelForward(const Edges& edges){
 
 
     // Hardcoding the node value 
-    numberOfNodes = 1696415;
-    // numberOfNodes = 6;
-
+    cudaEventRecord(startNumvertices);
+    // numberOfNodes = NumVerticesGPU(numberOfEdges,dev_edges);
+    calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
+    cudaEventRecord(stopNumvertices);
+    cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
+    numberOfNodes = 1 + (*out);
+ 
     // allocate space for the node array
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
@@ -220,17 +442,15 @@ void parallelForward(const Edges& edges){
 
     cudaDeviceSynchronize();
 
-     
     // compute the degree of the nodes
     cudaEventRecord(startFilter);
-    filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2);
+    filter<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges);
     cudaEventRecord(stopFilter);
 
     cudaDeviceSynchronize();
 
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
-
 
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
@@ -248,16 +468,20 @@ void parallelForward(const Edges& edges){
     cudaDeviceSynchronize();
 
     //calculate the number of triangles
-    thrust::device_ptr<int> ptr(result);
-    int numberoftriangles =  thrust::reduce(ptr, ptr + (numberOfBlocks * threadsPerBlock));
+    cudaEventRecord(startSumTri);
+    calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
+    cudaEventRecord(stopSumTri);
 
-    // debug(result,numberOfNodes,"triangle array");
+    cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
+    int numberoftriangles = (*out);
 
     printf("number of triangles = %d\n",numberoftriangles);
 
     cudaFree(dev_edges);
     cudaFree(dev_nodes);
     cudaFree(result);
+    cudaFree(d_out);
+    free(out);
 
     float m1 = 0;
     cudaEventElapsedTime(&m1, startNodeArray1, stopNodeArray1);
@@ -275,15 +499,31 @@ void parallelForward(const Edges& edges){
     cudaEventElapsedTime(&m4, startTriCount, stopTriCount);
     printf("CUDA Elapsed Time for Triangle Counting = %f ms\n", m4);
 
+    float m5 = 0;
+    cudaEventElapsedTime(&m5, startNumvertices, stopNumvertices);
+    printf("CUDA Elapsed Time for num of vertices = %f ms\n", m5);
+
+    float m6 = 0;
+    cudaEventElapsedTime(&m6, startSumTri, stopSumTri);
+    printf("CUDA Elapsed Time for Sume Triangles %f ms\n", m6);
+
     cudaEventDestroy(startNodeArray1);
     cudaEventDestroy(stopNodeArray1);
+
     cudaEventDestroy(startNodeArray2);
     cudaEventDestroy(stopNodeArray2);
+
     cudaEventDestroy(startFilter);
     cudaEventDestroy(stopFilter);
+
     cudaEventDestroy(startTriCount);
     cudaEventDestroy(stopTriCount);
-    
+
+    cudaEventDestroy(startNumvertices);
+    cudaEventDestroy(stopNumvertices);
+
+    cudaEventDestroy(startSumTri);
+    cudaEventDestroy(stopSumTri);
     
     double endKernelTime = CycleTimer::currentSeconds();
     double kernelDuration = endKernelTime - startKernelTime;
