@@ -18,6 +18,7 @@ using namespace std;
 
 #define threadsPerBlock 1024
 #define numberOfBlocks 46
+#define blocks_x_threads (threadsPerBlock * numberOfBlocks)
 #define FILTER -1
 #define inf 0x7f800000 
 // ptr =  cuda device pointer
@@ -244,7 +245,7 @@ void calculateNumVertices(int* d_in, int* d_out, int num_elements)
 __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int size, int n){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;
+    int step = blocks_x_threads;
     int x,y;
 
     // bug-: node id that were not present, were not getting updated to zero 
@@ -307,7 +308,7 @@ __global__ void nodeArray(const int* __restrict__ dev_edges, int *dev_nodes,int 
 __global__ void filter(int* dev_edges,const int* __restrict__ dev_nodes,int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;
+    int step = blocks_x_threads;
     //int id;
     for(int iter = idx; iter < numberOfEdges; iter += step)
     {
@@ -340,7 +341,7 @@ __global__ void filter(int* dev_edges,const int* __restrict__ dev_nodes,int numb
 __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, int* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = gridDim.x * blockDim.x;
+    int step = blocks_x_threads;
     int count  = 0;
     //int id = 0;
     for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
@@ -357,10 +358,11 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
         int e_start = dev_nodes[se_pair.y];
         int e_end = dev_nodes[se_pair.y + 1];
         
+        
         int2 s_next,e_next;
         s_next = ((int2*)dev_edges)[s_start];
         e_next = ((int2*)dev_edges)[e_start];
-
+        
         while(s_start < s_end && e_start < e_end)
         {
             /*
@@ -421,7 +423,7 @@ int NumVerticesGPU(int m, int* edges) {
     return 1 + thrust::reduce(ptr, ptr + 2 * m, 0, thrust::maximum<int>());
     }
 void parallelForward(const Edges& edges){
-    double startKernelTime = CycleTimer::currentSeconds();
+
     int numberOfEdges = edges.size();
     int* dev_edges;
     int* dev_nodes;
@@ -446,7 +448,8 @@ void parallelForward(const Edges& edges){
     cudaEventCreate(&stopNumVertices);
     cudaEventCreate(&startSumTri);
     cudaEventCreate(&stopSumTri);
-    
+
+    double startKernelTime = CycleTimer::currentSeconds();
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
     cudaMalloc(&result, numberOfBlocks * threadsPerBlock * sizeof(uint64_t));
@@ -454,18 +457,21 @@ void parallelForward(const Edges& edges){
     cudaMemcpyHostToDevice);
     cudaMalloc(&d_out, 2 * numberOfEdges * sizeof(int));
 
+
+
+
     // Hardcoding the node value 
-    cudaEventRecord(startNumVertices);
+    //cudaEventRecord(startNumVertices);
     calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
-    cudaEventRecord(stopNumVertices);
+    //cudaEventRecord(stopNumVertices);
     cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
     numberOfNodes = 1 + (*out);
     printf("number of nodes = %d\n", numberOfNodes);
     // numberOfNodes = 4;
     SortEdges(numberOfEdges, dev_edges);
     // allocate space for the node array
-    cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
+    cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
     // reuse the same node-array for everything to save space
     //numberOfBlocks = (numberOfEdges + threadsPerBlock - 1) / threadsPerBlock;
     cudaEventRecord(startNodeArray1);
@@ -501,6 +507,8 @@ void parallelForward(const Edges& edges){
     calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
     cudaEventRecord(stopSumTri);
 
+
+
     //calculate the number of triangles
     //change pointer to int in case of using dev_edges
     //ptr = dev_edges + numberOfEdges
@@ -509,8 +517,16 @@ void parallelForward(const Edges& edges){
     cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
     int numberoftriangles = (*out);
 
-    //debug(result,numberOfNodes,"triangle array");
 
+    cudaFree(result);
+    cudaFree(dev_edges);
+    cudaFree(dev_nodes);
+    cudaFree(d_out);
+
+    
+    double endKernelTime = CycleTimer::currentSeconds();
+    //debug(result,numberOfNodes,"triangle array");
+    free(out);
     printf("number of triangles = %lld\n",numberoftriangles);
 
     float m1 = 0;
@@ -550,12 +566,8 @@ void parallelForward(const Edges& edges){
     cudaEventDestroy(startSumTri);
     cudaEventDestroy(stopSumTri);
 
-    cudaFree(result);
-    cudaFree(dev_edges);
-    cudaFree(dev_nodes);
-    cudaFree(d_out);
-    free(out);
-    double endKernelTime = CycleTimer::currentSeconds();
+
+
     double kernelDuration = endKernelTime - startKernelTime;
     printf("KernelDuration: %.3f ms\n", 1000.f * kernelDuration);
 
