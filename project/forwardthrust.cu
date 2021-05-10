@@ -337,76 +337,64 @@ __global__ void filter(int* dev_edges,const int* __restrict__ dev_nodes,int numb
     }     
 
 }
-
+__global__ void separate(int* dev_edges, int*d_out, int numberOfEdges) {
+    int from = blockDim.x * blockIdx.x + threadIdx.x;
+    int step = blocks_x_threads;
+    for (int i = from; i < numberOfEdges; i += step) {
+        int2 sd_pair = ((int2*)dev_edges)[i];  
+        d_out[i] = sd_pair.x;
+        d_out[numberOfEdges + i] = sd_pair.y;
+      //d_out[i] = dev_edges[2 * i];
+      //d_out[numberOfEdges + i] = dev_edges[2 * i + 1];
+    }
+}
 __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, int* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int step = blocks_x_threads;
-    int count  = 0;
-    //int id = 0;
-    for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
-
-        //id = iter * 2;
+    int step = gridDim.x * blockDim.x;    
+    int count = 0;
+    int id = 0;
+    
+    for(int iter = idx; iter < numberOfEdges; iter = iter + step)
+    {
         
-        /*
+        id = iter;
         int s = dev_edges[id];
-        int e = dev_edges[id + 1];
-        */
-        int2 se_pair = ((int2*)dev_edges)[iter];
-        int s_start = dev_nodes[se_pair.x];
-        int s_end = dev_nodes[se_pair.x + 1];
-        int e_start = dev_nodes[se_pair.y];
-        int e_end = dev_nodes[se_pair.y + 1];
-        
-        
-        int2 s_next,e_next;
-        s_next = ((int2*)dev_edges)[s_start];
-        e_next = ((int2*)dev_edges)[e_start];
-        
+        int e = dev_edges[numberOfEdges + id];
+
+        int s_start = dev_nodes[s];
+        int s_end = dev_nodes[s + 1];
+        int e_start = dev_nodes[e];
+        int e_end = dev_nodes[e + 1];
+        int s_next,e_next;
+        s_next = dev_edges[(s_start)];
+        e_next = dev_edges[(e_start)];
+
+        // printf("id = %d,s = %d, s_start = %d \n",id,s,s_start);
         while(s_start < s_end && e_start < e_end)
         {
-            /*
-            s_next = dev_edges[(s_start << 1)];
-            e_next = dev_edges[(e_start << 1)];
+
             int difference = s_next - e_next;
-            if(difference < 0)
-                s_start += 1;
-            else if(difference > 0)
-                e_start += 1;
-            else {
-                s_start += 1;
-                e_start += 1;
-                count++;
-            }
-            */
-            // TODO: need to run and check for speed, vector accesses might have increased execution time
-            int a = s_next.x;
-            int b = e_next.x;
+            // printf("I am here %d\n",difference);
 
-
-            if(a < b) {
-                s_start+=1;
-                s_next = ((int2*)dev_edges)[s_start];
+            if(difference < 0) { 
+                s_start += 1;
+                s_next = dev_edges[(s_start)];
             }
-            else if(a > b) {
-                e_start+=1;
-                e_next = ((int2*)dev_edges)[e_start];
+            if(difference > 0) {
+                e_start += 1;
+                e_next = dev_edges[(e_start)];
             }
-            else {
+            if(difference == 0) {
                 count++;
-                s_start+=1;
-                s_next = ((int2*)dev_edges)[s_start];
-                e_start+=1;
-                e_next = ((int2*)dev_edges)[e_start];
+                s_start += 1;
+                s_next = dev_edges[(s_start)];
+                e_start += 1;
+                e_next = dev_edges[(e_start)];
             }
-            
         }
-
-    
-
     }
     result[idx] = count;
-    //dev_edges[numberOfEdges + idx] = count;
 }
 void SortEdges(int m, int* edges) {
     thrust::device_ptr<uint64_t> ptr((uint64_t*)edges);
@@ -434,7 +422,7 @@ void parallelForward(const Edges& edges){
     int* out = (int*)malloc(sizeof(int));
 
 
-    cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, stopFilter, startTriCount, stopTriCount, startNumVertices, stopNumVertices, startSumTri, stopSumTri;
+    cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, stopFilter, startTriCount, stopTriCount, startNumVertices, stopNumVertices, startSumTri, stopSumTri, startSeparate, stopSeparate;
 
     cudaEventCreate(&startNodeArray1);
     cudaEventCreate(&stopNodeArray1);
@@ -448,6 +436,8 @@ void parallelForward(const Edges& edges){
     cudaEventCreate(&stopNumVertices);
     cudaEventCreate(&startSumTri);
     cudaEventCreate(&stopSumTri);
+    cudaEventCreate(&startSeparate);
+    cudaEventCreate(&stopSeparate);
 
     double startKernelTime = CycleTimer::currentSeconds();
     // transfer data to GPU
@@ -461,15 +451,16 @@ void parallelForward(const Edges& edges){
 
 
     // Hardcoding the node value 
-    //cudaEventRecord(startNumVertices);
+    cudaEventRecord(startNumVertices);
     calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
-    //cudaEventRecord(stopNumVertices);
+    cudaEventRecord(stopNumVertices);
     cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
     numberOfNodes = 1 + (*out);
     printf("number of nodes = %d\n", numberOfNodes);
     // numberOfNodes = 4;
     SortEdges(numberOfEdges, dev_edges);
     // allocate space for the node array
+    //debug(dev_edges,numberOfEdges*2,"sorted edges");
 
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
     // reuse the same node-array for everything to save space
@@ -478,6 +469,7 @@ void parallelForward(const Edges& edges){
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaEventRecord(stopNodeArray1);
     cudaDeviceSynchronize();
+    //debug(dev_nodes,numberOfNodes,"node aray 1");
 
     printf("number of edges = %d\n", numberOfEdges);
     // compute the degree of the nodes
@@ -489,6 +481,7 @@ void parallelForward(const Edges& edges){
 
     //remove the filtered edges
     remove(dev_edges,numberOfEdges);
+    //debug(dev_edges,numberOfEdges,"filtered edges");
     //printf("hello\n");
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
@@ -497,14 +490,19 @@ void parallelForward(const Edges& edges){
     nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaEventRecord(stopNodeArray2);
     cudaDeviceSynchronize(); 
+    //debug(dev_nodes,numberOfNodes,"node aray 2");
+    cudaEventRecord(startSeparate);
+    separate<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, d_out, numberOfEdges/2);
+    cudaEventRecord(stopSeparate);
+    //debug(d_out,numberOfEdges,"separarted array");
     // note = the actual index of the element in edge array is 2*nodeArray[i]
     cudaEventRecord(startTriCount);
-    trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(dev_edges, dev_nodes, result, numberOfEdges);
+    trianglecounting<<<numberOfBlocks,threadsPerBlock>>>(d_out, dev_nodes, result, numberOfEdges/2);
     cudaEventRecord(stopTriCount);
     cudaDeviceSynchronize();
 
     cudaEventRecord(startSumTri);
-    calculateSum(result, d_out, numberOfBlocks * threadsPerBlock);
+    calculateSum(result, dev_edges, numberOfBlocks * threadsPerBlock);
     cudaEventRecord(stopSumTri);
 
 
@@ -514,7 +512,7 @@ void parallelForward(const Edges& edges){
     //ptr = dev_edges + numberOfEdges
     //thrust::device_ptr<int> ptr(result);
     //int numberoftriangles =  thrust::reduce(ptr, ptr + (numberOfBlocks * threadsPerBlock));
-    cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(out, dev_edges, sizeof(int), cudaMemcpyDeviceToHost);
     int numberoftriangles = (*out);
 
 
@@ -545,13 +543,17 @@ void parallelForward(const Edges& edges){
     cudaEventElapsedTime(&m3, startNodeArray2, stopNodeArray2);
     printf("CUDA Elapsed Time for Node Array 2 %f ms\n", m3);
 
+    float m7 = 0;
+    cudaEventElapsedTime(&m7, startSeparate, stopSeparate);
+    printf("CUDA Elapsed Time for separate %f ms\n", m7);
+
     float m4 = 0;
     cudaEventElapsedTime(&m4, startTriCount, stopTriCount);
     printf("CUDA Elapsed Time for Triangle Counting %f ms\n", m4);
 
     float m6 = 0;
     cudaEventElapsedTime(&m6, startSumTri, stopSumTri);
-    printf("CUDA Elapsed Time for Sume Triangles %f ms\n", m6);
+    printf("CUDA Elapsed Time for Sum Triangles %f ms\n", m6);
 
     cudaEventDestroy(startNodeArray1);
     cudaEventDestroy(stopNodeArray1);
@@ -565,7 +567,8 @@ void parallelForward(const Edges& edges){
     cudaEventDestroy(stopNumVertices);
     cudaEventDestroy(startSumTri);
     cudaEventDestroy(stopSumTri);
-
+    cudaEventDestroy(startSeparate);
+    cudaEventDestroy(stopSeparate);
 
 
     double kernelDuration = endKernelTime - startKernelTime;
