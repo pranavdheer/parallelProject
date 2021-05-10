@@ -109,7 +109,6 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
         int destinationDegree = dev_nodes[(sd_pair.y) + 1] - dev_nodes[sd_pair.y]; 
 
         if(destinationDegree < sourceDegree || (destinationDegree == sourceDegree && sd_pair.y < sd_pair.x)){
-
             ((int2*)dev_edges)[id] =  make_int2(FILTER, FILTER);
 
         }         
@@ -278,12 +277,39 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
     result[idx] = count;
 }
 
-void remove(int* dev_edges,int numberOfEdges){
+void remove(int* dev_edges,int numberOfEdges) {
 
     thrust::device_ptr<int> ptr((int*)dev_edges);
     thrust::remove(ptr, ptr + 2*numberOfEdges , FILTER);
 
 }
+
+// __global__ void remove_filter(int* dev_edges ,int* d_out  ,int numberOfEdges) {
+
+//     int idx = blockDim.x * blockIdx.x + threadIdx.x;
+//     int step = gridDim.x * blockDim.x;
+
+//     for(int iter = 2*idx; iter<numberOfEdges; iter = iter+step) {
+
+//         if ( dev_edges[idx] == FILTER ) {
+
+//             d_out[idx] = 0;
+//             d_out[idx + 1] = 0;
+//         }
+
+//         else {
+//             d_out[idx] = 1;
+//             d_out[idx + 1] = 1;
+//         }
+//     }
+// } 
+
+// void remove_filter_wrapper () {
+
+//     remove_filter(dev_edges,d_out,numberOfEdges);
+//     cudaDeviceSynchronize();
+
+// }
 
 void sort(int* dev_edges,int numberOfEdges){
 
@@ -381,7 +407,6 @@ void calculateSum(int* d_in, int* d_out, int num_elements)
 
 void parallelForward(const Edges& edges){
 
-    double startKernelTime = CycleTimer::currentSeconds();
 
     int numberOfEdges = edges.size();
     int* dev_edges;
@@ -392,7 +417,7 @@ void parallelForward(const Edges& edges){
     int* out = (int*)malloc(sizeof(int));
 
     cudaEvent_t startNodeArray1, stopNodeArray1, startNodeArray2, stopNodeArray2,startFilter, 
-    stopFilter, startTriCount, stopTriCount,startNumvertices,stopNumvertices, startSumTri, stopSumTri;
+    stopFilter, startTriCount, stopTriCount,startNumvertices,stopNumvertices, startSumTri, stopSumTri, startRemove,stopRemove,startSort,stopSort;
 
     // timer code
     cudaEventCreate(&startNodeArray1);
@@ -413,23 +438,31 @@ void parallelForward(const Edges& edges){
     cudaEventCreate(&startSumTri);
     cudaEventCreate(&stopSumTri);
 
+    cudaEventCreate(&startRemove);
+    cudaEventCreate(&stopRemove);
+
+    cudaEventCreate(&startSort);
+    cudaEventCreate(&stopSort);
+
     // transfer data to GPU
     cudaMalloc(&dev_edges, 2 * numberOfEdges * sizeof(int));
     cudaMalloc(&result, numberOfBlocks * threadsPerBlock * sizeof(int));
     cudaMalloc(&d_out, 2 * numberOfEdges * sizeof(int));
 
+    double startKernelTime = CycleTimer::currentSeconds();
 
     cudaMemcpy(dev_edges, edges.data(), numberOfEdges * 2 * sizeof(int),
     cudaMemcpyHostToDevice);
 
+    cudaEventRecord(startSort);
     sort(dev_edges,numberOfEdges);
-
+    cudaEventRecord(stopSort);
 
     // Hardcoding the node value 
     cudaEventRecord(startNumvertices);
-    // numberOfNodes = NumVerticesGPU(numberOfEdges,dev_edges);
     calculateNumVertices(dev_edges, d_out, numberOfEdges * 2);
     cudaEventRecord(stopNumvertices);
+
     cudaMemcpy(out, d_out, sizeof(int), cudaMemcpyDeviceToHost);
     numberOfNodes = 1 + (*out);
  
@@ -450,7 +483,9 @@ void parallelForward(const Edges& edges){
     cudaDeviceSynchronize();
 
     //remove the filtered edges
+    cudaEventRecord(startRemove);
     remove(dev_edges,numberOfEdges);
+    cudaEventRecord(stopRemove);
 
     //get the node array once again
     //note = new size of the edge array is now numberOfEdges
@@ -477,6 +512,10 @@ void parallelForward(const Edges& edges){
 
     printf("number of triangles = %d\n",numberoftriangles);
 
+    double endKernelTime = CycleTimer::currentSeconds();
+    double kernelDuration = endKernelTime - startKernelTime;
+    printf("KernelDuration: %.3f ms\n", 1000.f * kernelDuration);
+
     cudaFree(dev_edges);
     cudaFree(dev_nodes);
     cudaFree(result);
@@ -484,28 +523,37 @@ void parallelForward(const Edges& edges){
     free(out);
 
     float m1 = 0;
-    cudaEventElapsedTime(&m1, startNodeArray1, stopNodeArray1);
-    printf("CUDA Elapsed Time for Node Array 1 = %f ms\n", m1);
+    cudaEventElapsedTime(&m1, startNumvertices, stopNumvertices);
+    printf("CUDA Elapsed Time for num of vertices = %f ms\n", m1);
 
     float m2 = 0;
-    cudaEventElapsedTime(&m2, startFilter, stopFilter);
-    printf("CUDA Elapsed Time for Filter = %f ms\n", m2);
+    cudaEventElapsedTime(&m2, startNodeArray1, stopNodeArray1);
+    printf("CUDA Elapsed Time for nodeArray filter 1 = %f ms\n", m2);
+
 
     float m3 = 0;
-    cudaEventElapsedTime(&m3, startNodeArray2, stopNodeArray2);
-    printf("CUDA Elapsed Time for Node Array 2 = %f ms\n", m3);
+    cudaEventElapsedTime(&m3, startFilter, stopFilter);
+    printf("CUDA Elapsed Time for edge filter = %f ms\n", m3);
 
     float m4 = 0;
-    cudaEventElapsedTime(&m4, startTriCount, stopTriCount);
-    printf("CUDA Elapsed Time for Triangle Counting = %f ms\n", m4);
+    cudaEventElapsedTime(&m4, startRemove, stopRemove);
+    printf("CUDA Elapsed Time for edge Remove %f ms\n", m4);
 
     float m5 = 0;
-    cudaEventElapsedTime(&m5, startNumvertices, stopNumvertices);
-    printf("CUDA Elapsed Time for num of vertices = %f ms\n", m5);
+    cudaEventElapsedTime(&m5, startNodeArray2, stopNodeArray2);
+    printf("CUDA Elapsed Time for nodeArray filter 2 = %f ms\n", m5);
 
     float m6 = 0;
-    cudaEventElapsedTime(&m6, startSumTri, stopSumTri);
-    printf("CUDA Elapsed Time for Sume Triangles %f ms\n", m6);
+    cudaEventElapsedTime(&m6, startTriCount, stopTriCount);
+    printf("CUDA Elapsed Time for calculating Triangles %f ms\n", m6);
+
+    float m7 = 0;
+    cudaEventElapsedTime(&m7, startSumTri, stopSumTri);
+    printf("CUDA Elapsed Time for Summing the number of Triangles %f ms\n", m7);
+
+    float m8 = 0;
+    cudaEventElapsedTime(&m8, startSort, stopSort);
+    printf("CUDA Elapsed Time for Sorting %f ms\n", m8);
 
     cudaEventDestroy(startNodeArray1);
     cudaEventDestroy(stopNodeArray1);
@@ -524,11 +572,13 @@ void parallelForward(const Edges& edges){
 
     cudaEventDestroy(startSumTri);
     cudaEventDestroy(stopSumTri);
-    
-    double endKernelTime = CycleTimer::currentSeconds();
-    double kernelDuration = endKernelTime - startKernelTime;
-    printf("KernelDuration: %.3f ms\n", 1000.f * kernelDuration);
 
+    cudaEventDestroy(startRemove);
+    cudaEventDestroy(stopRemove);
+
+    cudaEventDestroy(startSort);
+    cudaEventDestroy(stopSort);
+    
 
 }
 
