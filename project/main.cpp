@@ -90,7 +90,7 @@ void WriteEdgesToFile(const char* filename) {
   out.write((char*)edges.data(), 2 * m * sizeof(int));
 }
 
-void readFromFile(char* filename, char* filewrite){
+void readFromFile(char* filename){
   std::unordered_map<int, int> nodes;
   int next_node = 0;
     ifstream in(filename);
@@ -112,8 +112,8 @@ void readFromFile(char* filename, char* filewrite){
     printf("read file\n");
     NormalizeEdges(&edges);
     printf("normalized\n");
-    WriteEdgesToFile(filewrite);
-    printf("written to file\n");
+    //WriteEdgesToFile(filewrite);
+    //printf("written to file\n");
 }
 
 
@@ -127,7 +127,7 @@ int main(int argc, char** argv){
 
     char* test = argv[1];
     char* file = argv[2]; 
-    char* file2 = argv[3];
+    //char* file2 = argv[3];
     
     // enter custom dataset
     if( !strcmp(test,"custom")){
@@ -140,11 +140,11 @@ int main(int argc, char** argv){
     }
     // read from file
     else if(!strcmp(test,"file")) {
-        if(argc <= 3 ){
+        if(argc <= 2 ){
             cout<<"Enter file name "<<endl;
             exit(1);
         }       
-        readFromFile(file, file2);
+        readFromFile(file);
 
         if(edges.size() > 0 )
             parallelForward(edges);    
