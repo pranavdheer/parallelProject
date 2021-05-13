@@ -21,6 +21,26 @@ using namespace std;
 #define FILTER -2
 #define inf 0x7f800000 
 
+void printCudaInfo() {
+    int deviceCount = 0;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+
+    printf("---------------------------------------------------------\n");
+    printf("Found %d CUDA devices\n", deviceCount);
+
+    for (int i=0; i<deviceCount; i++) {
+        cudaDeviceProp deviceProps;
+        cudaGetDeviceProperties(&deviceProps, i);
+        printf("Device %d: %s\n", i, deviceProps.name);
+        printf("   SMs:        %d\n", deviceProps.multiProcessorCount);
+        printf("   Global mem: %.0f MB\n",
+               static_cast<float>(deviceProps.totalGlobalMem) / (1024 * 1024));
+        printf("   CUDA Cap:   %d.%d\n", deviceProps.major, deviceProps.minor);
+        printf("   Shared memory per block:   %d bytes\n", deviceProps.sharedMemPerBlock);
+    }
+    printf("---------------------------------------------------------\n");
+}
+
 // ptr =  cuda device pointer
 void debug(int *ptr,int size, string msg){
 
@@ -58,7 +78,7 @@ void compare(int *ptr1 , int *ptr2 ,int size){
 
 }
 
-__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
+__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n, int flag ){
 
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -73,7 +93,6 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
         x = dev_edges[1];
         for(int i=0 ;i<=x;i++)
             dev_nodes[i] = 0;
-
     }
     
     for( int id = idx; id < size/2; id += step){
@@ -92,6 +111,7 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
         for(int i = x+1 ; i <= y ; i++ ){  
             dev_nodes[i] = id + 1; //always divisble by two
         }
+
 
     }
 }    
@@ -152,6 +172,7 @@ __global__ void find_max(int* in, int* out, int elements_per_block)
 {
 
 	__shared__ int smem_max[1024];
+
 
 	int idx = threadIdx.x + blockIdx.x * elements_per_block;
 	int max = -inf;
@@ -239,13 +260,43 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
     int step = gridDim.x * blockDim.x;
     int count  = 0;
  
+    __shared__ int shared[12288];
+
+    for (int i=threadIdx.x;i<12288;i=i+1024) {
+        shared[i] =  dev_nodes[i];
+    }
+    __syncthreads();
+    
     for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
 
+
         int2 se_pair = ((int2*)dev_edges)[iter];
-        int s_start = dev_nodes[se_pair.x];
-        int s_end = dev_nodes[se_pair.x + 1];
-        int e_start = dev_nodes[se_pair.y];
-        int e_end = dev_nodes[se_pair.y + 1];
+        int s_start,s_end,e_start,e_end;
+
+        if(se_pair.x +1 < 12288){
+           s_start = shared[se_pair.x];
+           s_end = shared[se_pair.x + 1];
+        }   
+        else {  
+            s_start = dev_nodes[se_pair.x];
+            s_end = dev_nodes[se_pair.x + 1];
+        }    
+
+        if(se_pair.y + 1 < 12288){
+            e_start = shared[se_pair.y];
+            e_end = shared[se_pair.y + 1];
+        } 
+        else {
+
+            e_start = dev_nodes[se_pair.y];
+            e_end = dev_nodes[se_pair.y + 1];
+
+        }
+        
+        // int s_start = dev_nodes[se_pair.x];
+        // int s_end = dev_nodes[se_pair.x + 1];
+        // int e_start = dev_nodes[se_pair.y];
+        // int e_end = dev_nodes[se_pair.y + 1];
         
         int2 s_next,e_next;
         s_next = ((int2*)dev_edges)[s_start];
@@ -470,7 +521,7 @@ void parallelForward(const Edges& edges){
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
     cudaEventRecord(startNodeArray1);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes,0);
     cudaEventRecord(stopNodeArray1);
 
     cudaDeviceSynchronize();
@@ -491,9 +542,10 @@ void parallelForward(const Edges& edges){
     //note = new size of the edge array is now numberOfEdges
 
     cudaEventRecord(startNodeArray2);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes,1);
     cudaEventRecord(stopNodeArray2);
 
+    // debug(dev_edges,numberOfEdges,"node array result");
     cudaDeviceSynchronize(); 
 
     cudaEventRecord(startTriCount);
@@ -578,26 +630,9 @@ void parallelForward(const Edges& edges){
 
     cudaEventDestroy(startSort);
     cudaEventDestroy(stopSort);
+
+    // printCudaInfo();
     
 
 }
 
-void printCudaInfo() {
-    int deviceCount = 0;
-    cudaError_t err = cudaGetDeviceCount(&deviceCount);
-
-    printf("---------------------------------------------------------\n");
-    printf("Found %d CUDA devices\n", deviceCount);
-
-    for (int i=0; i<deviceCount; i++) {
-        cudaDeviceProp deviceProps;
-        cudaGetDeviceProperties(&deviceProps, i);
-        printf("Device %d: %s\n", i, deviceProps.name);
-        printf("   SMs:        %d\n", deviceProps.multiProcessorCount);
-        printf("   Global mem: %.0f MB\n",
-               static_cast<float>(deviceProps.totalGlobalMem) / (1024 * 1024));
-        printf("   CUDA Cap:   %d.%d\n", deviceProps.major, deviceProps.minor);
-        printf("   Shared memory per block:   %d bytes\n", deviceProps.sharedMemPerBlock);
-    }
-    printf("---------------------------------------------------------\n");
-}
