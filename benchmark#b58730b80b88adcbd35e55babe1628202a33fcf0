@@ -1,8 +1,0 @@
-done reading the file
-number of edges = 22190596
-number of triangles = 28769868
-CUDA Elapsed Time for Node Array 1 = 0.554944 ms
-CUDA Elapsed Time for Filter = 6.199776 ms
-CUDA Elapsed Time for Node Array 2 = 0.264096 ms
-CUDA Elapsed Time for Triangle Counting = 261.147858 ms
-KernelDuration: 922.871 ms

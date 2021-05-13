@@ -16,32 +16,19 @@
 
 using namespace std;
 
+///////////////////////////////////Costants/////////////////////////////////////////////////////////////////////////////
 #define threadsPerBlock 1024
 #define numberOfBlocks 400
 #define FILTER -2
 #define inf 0x7f800000 
+///////////////////////////////////Costants/////////////////////////////////////////////////////////////////////////////
 
-void printCudaInfo() {
-    int deviceCount = 0;
-    cudaError_t err = cudaGetDeviceCount(&deviceCount);
 
-    printf("---------------------------------------------------------\n");
-    printf("Found %d CUDA devices\n", deviceCount);
-
-    for (int i=0; i<deviceCount; i++) {
-        cudaDeviceProp deviceProps;
-        cudaGetDeviceProperties(&deviceProps, i);
-        printf("Device %d: %s\n", i, deviceProps.name);
-        printf("   SMs:        %d\n", deviceProps.multiProcessorCount);
-        printf("   Global mem: %.0f MB\n",
-               static_cast<float>(deviceProps.totalGlobalMem) / (1024 * 1024));
-        printf("   CUDA Cap:   %d.%d\n", deviceProps.major, deviceProps.minor);
-        printf("   Shared memory per block:   %d bytes\n", deviceProps.sharedMemPerBlock);
-    }
-    printf("---------------------------------------------------------\n");
-}
-
+///////////////////////////////////////////DEBUG utility/////////////////////////////////////////////////////////////////////////
 // ptr =  cuda device pointer
+// size = size of cuda pointer
+// msg = custom message
+//utility to debug the code
 void debug(int *ptr,int size, string msg){
 
     cout<<msg<<endl;
@@ -78,7 +65,39 @@ void compare(int *ptr1 , int *ptr2 ,int size){
 
 }
 
-__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n, int flag ){
+
+void printCudaInfo() {
+    int deviceCount = 0;
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+
+    printf("---------------------------------------------------------\n");
+    printf("Found %d CUDA devices\n", deviceCount);
+
+    for (int i=0; i<deviceCount; i++) {
+        cudaDeviceProp deviceProps;
+        cudaGetDeviceProperties(&deviceProps, i);
+        printf("Device %d: %s\n", i, deviceProps.name);
+        printf("   SMs:        %d\n", deviceProps.multiProcessorCount);
+        printf("   Global mem: %.0f MB\n",
+               static_cast<float>(deviceProps.totalGlobalMem) / (1024 * 1024));
+        printf("   CUDA Cap:   %d.%d\n", deviceProps.major, deviceProps.minor);
+        printf("   Shared memory per block:   %d bytes\n", deviceProps.sharedMemPerBlock);
+    }
+    printf("---------------------------------------------------------\n");
+}
+
+///////////////////////////////////////////DEBUG utility/////////////////////////////////////////////////////////////////////////
+
+
+
+// node array saves the index of the node in edge
+// assumption-: array is sorted
+// dev_edges = edge array
+// dev_nodes = node array
+// size = size of the dev_edges
+// n = number of nodes
+//
+__global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n){
 
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -94,7 +113,7 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n, int fl
         for(int i=0 ;i<=x;i++)
             dev_nodes[i] = 0;
     }
-    
+    // take a step size in grid
     for( int id = idx; id < size/2; id += step){
         
         int edgeIndex = (id * 2) + 1;
@@ -112,10 +131,13 @@ __global__ void nodeArray(int* dev_edges, int *dev_nodes,int size, int n, int fl
             dev_nodes[i] = id + 1; //always divisble by two
         }
 
-
     }
 }    
 
+// mark the outgoing edges
+// making graph from directed to undirected
+// dev_edges = edge array
+// dev_nodes = node array
 __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
 
     int id = blockDim.x * blockIdx.x + threadIdx.x;
@@ -135,6 +157,10 @@ __global__ void filter(int* dev_edges,int* dev_nodes,int numberOfEdges){
     }
 }   
 
+
+//////////////////////////////////finding max in the edge array (parallel reduction)////////////////////////////////////////////////////////////
+// parallel reduction utitlity
+// meant to be operated on a block
 __device__ void warp_reduce_max(int smem[1024])
 {
     smem[threadIdx.x] = smem[threadIdx.x+512] > smem[threadIdx.x] ? 
@@ -168,11 +194,12 @@ __device__ void warp_reduce_max(int smem[1024])
 						smem[threadIdx.x+1] : smem[threadIdx.x]; __syncthreads();
 }
 
+// find the max in the edge array
+// use to calculate number of nodes
 __global__ void find_max(int* in, int* out, int elements_per_block)
 {
 
 	__shared__ int smem_max[1024];
-
 
 	int idx = threadIdx.x + blockIdx.x * elements_per_block;
 	int max = -inf;
@@ -195,9 +222,11 @@ __global__ void find_max(int* in, int* out, int elements_per_block)
 	
 	if(threadIdx.x == 0)
 		out[blockIdx.x] = smem_max[threadIdx.x]; 
-	
+
 }
 
+// meant to be called after every block has found it's maximum
+// last step of parallel reduction
 __global__ void find_max_final(int* in, int* out, int n, int remaining, int num_blocks)
 {
 	__shared__ int smem_max[1024];
@@ -234,13 +263,13 @@ __global__ void find_max_final(int* in, int* out, int n, int remaining, int num_
 		out[blockIdx.x] = smem_max[threadIdx.x]; 
 }
 
+//////////////////////////////////finding max in the edge array (parallel reduction)///////////////////////////////////////////////////////////////////////
 
+// cuda wrapper for num of vertices kernel (uses the max kernel)
 void calculateNumVertices(int* d_in, int* d_out, int num_elements)
 {
-
-	//int elements_per_block = ; // needs to be set (random right now) ( = m * 2 / number of blocks)
 		
-	int num_blocks = numberOfBlocks;//46;//num_elements / elements_per_block; // redundant
+	int num_blocks = numberOfBlocks;
     int elements_per_block = num_elements / num_blocks;
 	int tail = num_elements - num_blocks * elements_per_block;
 	int remaining = num_elements - tail;
@@ -253,50 +282,30 @@ void calculateNumVertices(int* d_in, int* d_out, int num_elements)
 	
 }
 
-
+// triangle couting kernels
 __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __restrict__ dev_nodes, int* result, int numberOfEdges){
 
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     int step = gridDim.x * blockDim.x;
     int count  = 0;
  
-    __shared__ int shared[12288];
-
-    for (int i=threadIdx.x;i<12288;i=i+1024) {
-        shared[i] =  dev_nodes[i];
-    }
-    __syncthreads();
+    // __shared__ int shared[12288];
+        //Shared memory optimization (uncomment to use)
+    // for (int i=threadIdx.x;i<12288;i=i+1024) {
+    //     shared[i] =  dev_nodes[i];
+    // }
+    // __syncthreads();
     
     for(int iter = idx; iter<numberOfEdges / 2; iter = iter+step){
 
 
         int2 se_pair = ((int2*)dev_edges)[iter];
-        int s_start,s_end,e_start,e_end;
 
-        if(se_pair.x +1 < 12288){
-           s_start = shared[se_pair.x];
-           s_end = shared[se_pair.x + 1];
-        }   
-        else {  
-            s_start = dev_nodes[se_pair.x];
-            s_end = dev_nodes[se_pair.x + 1];
-        }    
-
-        if(se_pair.y + 1 < 12288){
-            e_start = shared[se_pair.y];
-            e_end = shared[se_pair.y + 1];
-        } 
-        else {
-
-            e_start = dev_nodes[se_pair.y];
-            e_end = dev_nodes[se_pair.y + 1];
-
-        }
         
-        // int s_start = dev_nodes[se_pair.x];
-        // int s_end = dev_nodes[se_pair.x + 1];
-        // int e_start = dev_nodes[se_pair.y];
-        // int e_end = dev_nodes[se_pair.y + 1];
+        int s_start = dev_nodes[se_pair.x];
+        int s_end = dev_nodes[se_pair.x + 1];
+        int e_start = dev_nodes[se_pair.y];
+        int e_end = dev_nodes[se_pair.y + 1];
         
         int2 s_next,e_next;
         s_next = ((int2*)dev_edges)[s_start];
@@ -304,7 +313,7 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
 
         while(s_start < s_end && e_start < e_end)
         {
-            // need to run and check for speed, vector accesses might have increased execution time
+            
             int a = s_next.x;
             int b = e_next.x;
 
@@ -328,6 +337,7 @@ __global__ void trianglecounting(const int* __restrict__ dev_edges,const int* __
     result[idx] = count;
 }
 
+// thrust remove filter
 void remove(int* dev_edges,int numberOfEdges) {
 
     thrust::device_ptr<int> ptr((int*)dev_edges);
@@ -335,32 +345,6 @@ void remove(int* dev_edges,int numberOfEdges) {
 
 }
 
-// __global__ void remove_filter(int* dev_edges ,int* d_out  ,int numberOfEdges) {
-
-//     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-//     int step = gridDim.x * blockDim.x;
-
-//     for(int iter = 2*idx; iter<numberOfEdges; iter = iter+step) {
-
-//         if ( dev_edges[idx] == FILTER ) {
-
-//             d_out[idx] = 0;
-//             d_out[idx + 1] = 0;
-//         }
-
-//         else {
-//             d_out[idx] = 1;
-//             d_out[idx + 1] = 1;
-//         }
-//     }
-// } 
-
-// void remove_filter_wrapper () {
-
-//     remove_filter(dev_edges,d_out,numberOfEdges);
-//     cudaDeviceSynchronize();
-
-// }
 
 void sort(int* dev_edges,int numberOfEdges){
 
@@ -369,11 +353,13 @@ void sort(int* dev_edges,int numberOfEdges){
     thrust::sort(ptr, ptr + numberOfEdges);
 }
 
+// use this function for comparison purposes
 int NumVerticesGPU(int m, int* edges) {
     thrust::device_ptr<int> ptr(edges);
     return 1 + thrust::reduce(ptr, ptr + 2 * m, 0, thrust::maximum<int>());
 }
 
+//////////////////////////////////partial sum (parallel reduction)////////////////////////////////////////////////////////////
 __device__ void warp_reduce_sum(int smem[1024])
 {
     smem[threadIdx.x] = smem[threadIdx.x+512] + smem[threadIdx.x]; __syncthreads();
@@ -456,6 +442,11 @@ void calculateSum(int* d_in, int* d_out, int num_elements)
 	find_sum_final<<<1, threadsPerBlock>>>(d_in, d_out, num_elements, remaining, num_blocks);
 }
 
+//////////////////////////////////partial sum (parallel reduction)////////////////////////////////////////////////////////////
+
+// entry point for the cuda kernel
+// edges saved as-:
+// source1 destination1 source 2 destination 2
 void parallelForward(const Edges& edges){
 
 
@@ -521,7 +512,7 @@ void parallelForward(const Edges& edges){
     cudaMalloc(&dev_nodes, (numberOfNodes + 1) * sizeof(int));
 
     cudaEventRecord(startNodeArray1);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes,0);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges*2,numberOfNodes);
     cudaEventRecord(stopNodeArray1);
 
     cudaDeviceSynchronize();
@@ -542,10 +533,10 @@ void parallelForward(const Edges& edges){
     //note = new size of the edge array is now numberOfEdges
 
     cudaEventRecord(startNodeArray2);
-    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes,1);
+    nodeArray<<<numberOfBlocks,threadsPerBlock>>>(dev_edges,dev_nodes,numberOfEdges,numberOfNodes);
     cudaEventRecord(stopNodeArray2);
 
-    // debug(dev_edges,numberOfEdges,"node array result");
+
     cudaDeviceSynchronize(); 
 
     cudaEventRecord(startTriCount);
